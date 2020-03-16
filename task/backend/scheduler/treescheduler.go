@@ -73,6 +73,7 @@ type TreeScheduler struct {
 	workchans     []chan Item
 	wg            sync.WaitGroup
 	checkpointer  SchedulableService
+	batch         itemList
 
 	sm *SchedulerMetrics
 }
@@ -215,16 +216,20 @@ type itemList struct {
 }
 
 func (s *TreeScheduler) process() {
-	iter, toReAdd := s.iterator(s.time.Now())
+	iter := s.iterator(s.time.Now())
 	s.priorityQueue.Ascend(iter)
-	for i := range toReAdd.toDelete {
-		delete(s.nextTime, toReAdd.toDelete[i].id)
-		s.priorityQueue.Delete(toReAdd.toDelete[i])
+
+	for i := range s.batch.toDelete {
+		delete(s.nextTime, s.batch.toDelete[i].id)
+		s.priorityQueue.Delete(s.batch.toDelete[i])
 	}
-	for i := range toReAdd.toInsert {
-		s.nextTime[toReAdd.toInsert[i].id] = toReAdd.toInsert[i].when
-		s.priorityQueue.ReplaceOrInsert(toReAdd.toInsert[i])
+	s.batch.toDelete = s.batch.toDelete[:0]
+
+	for i := range s.batch.toInsert {
+		s.nextTime[s.batch.toInsert[i].id] = s.batch.toInsert[i].when
+		s.priorityQueue.ReplaceOrInsert(s.batch.toInsert[i])
 	}
+	s.batch.toInsert = s.batch.toInsert[:0]
 }
 
 func (s *TreeScheduler) resetTimer(whenFromNow time.Duration) {
@@ -232,8 +237,7 @@ func (s *TreeScheduler) resetTimer(whenFromNow time.Duration) {
 	s.timer.Reset(whenFromNow)
 }
 
-func (s *TreeScheduler) iterator(ts time.Time) (btree.ItemIterator, *itemList) {
-	itemsToPlace := &itemList{}
+func (s *TreeScheduler) iterator(ts time.Time) btree.ItemIterator {
 	return func(i btree.Item) bool {
 		if i == nil {
 			return false
@@ -249,13 +253,13 @@ func (s *TreeScheduler) iterator(ts time.Time) (btree.ItemIterator, *itemList) {
 			wc := xxhash.Sum64(buf[:]) % uint64(len(s.workchans)) // we just hash so that the number is uniformly distributed
 			select {
 			case s.workchans[wc] <- it:
-				itemsToPlace.toDelete = append(itemsToPlace.toDelete, it)
+				s.batch.toDelete = append(s.batch.toDelete, it)
 				if err := it.updateNext(); err != nil {
 					// in this error case we can't schedule next, so we have to drop the task
 					s.onErr(context.Background(), it.id, it.Next(), &ErrUnrecoverable{err})
 					return true
 				}
-				itemsToPlace.toInsert = append(itemsToPlace.toInsert, it)
+				s.batch.toInsert = append(s.batch.toInsert, it)
 
 			case <-s.done:
 				return false
@@ -264,7 +268,7 @@ func (s *TreeScheduler) iterator(ts time.Time) (btree.ItemIterator, *itemList) {
 			}
 		}
 		return true
-	}, itemsToPlace
+	}
 }
 
 // When gives us the next time the scheduler will run a task.

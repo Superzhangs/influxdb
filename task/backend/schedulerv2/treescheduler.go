@@ -69,6 +69,8 @@ type TreeScheduler struct {
 	onErr        ErrorFunc
 	checkpointer SchedulableService
 
+	batch itemList
+
 	sm *SchedulerMetrics
 }
 
@@ -158,6 +160,7 @@ func (s *TreeScheduler) Process(ctx context.Context) {
 					s.state = SchedulerStateStopped
 					s.mu.Unlock()
 					return
+				default:
 				}
 			}
 		}
@@ -183,16 +186,19 @@ func (s *TreeScheduler) process(ctx context.Context) bool {
 		return false
 	}
 
-	iter, toReAdd := s.iterator(ctx, s.time.Now())
+	iter := s.iterator(ctx, s.time.Now())
 	s.priorityQueue.Ascend(iter)
-	for i := range toReAdd.toDelete {
-		delete(s.nextTime, toReAdd.toDelete[i].id)
-		s.priorityQueue.Delete(toReAdd.toDelete[i])
+	for i := range s.batch.toDelete {
+		delete(s.nextTime, s.batch.toDelete[i].id)
+		s.priorityQueue.Delete(s.batch.toDelete[i])
 	}
-	for i := range toReAdd.toInsert {
-		s.nextTime[toReAdd.toInsert[i].id] = toReAdd.toInsert[i].when
-		s.priorityQueue.ReplaceOrInsert(toReAdd.toInsert[i])
+	s.batch.toDelete = s.batch.toDelete[:0]
+
+	for i := range s.batch.toInsert {
+		s.nextTime[s.batch.toInsert[i].id] = s.batch.toInsert[i].when
+		s.priorityQueue.ReplaceOrInsert(s.batch.toInsert[i])
 	}
+	s.batch.toInsert = s.batch.toInsert[:0]
 
 	min = s.priorityQueue.Min()
 	if min == nil { // grab a new item, because there could be a different item at the top of the queue after processing
@@ -224,8 +230,7 @@ func (s *TreeScheduler) resetTimer(whenFromNow time.Duration) {
 	s.timer.Reset(whenFromNow)
 }
 
-func (s *TreeScheduler) iterator(ctx context.Context, ts time.Time) (btree.ItemIterator, *itemList) {
-	itemsToPlace := &itemList{}
+func (s *TreeScheduler) iterator(ctx context.Context, ts time.Time) btree.ItemIterator {
 	return func(i btree.Item) bool {
 		if i == nil {
 			return false
@@ -235,7 +240,7 @@ func (s *TreeScheduler) iterator(ctx context.Context, ts time.Time) (btree.ItemI
 		// scheduler, as it is something we can't recover from.
 
 		it := i.(Item)
-		if time.Unix(it.next+it.Offset, 0).After(ts) {
+		if time.Unix(it.next+it.Offset, 0).UTC().After(ts.UTC()) {
 			return false
 		}
 
@@ -249,7 +254,7 @@ func (s *TreeScheduler) iterator(ctx context.Context, ts time.Time) (btree.ItemI
 			// report the difference between when the item was supposed to be
 			// scheduled and now
 			s.sm.reportScheduleDelay(time.Since(it.Next()))
-			preExec := time.Now()
+			preExec := time.Now().UTC()
 			// execute
 			err = s.executor.Execute(ctx, it.id, t, it.When())
 			// report how long execution took
@@ -263,13 +268,13 @@ func (s *TreeScheduler) iterator(ctx context.Context, ts time.Time) (btree.ItemI
 			s.onErr(ctx, it.id, it.Next(), err)
 		}
 
-		itemsToPlace.toDelete = append(itemsToPlace.toDelete, it)
+		s.batch.toDelete = append(s.batch.toDelete, it)
 		if err := it.updateNext(); err != nil {
 			// in this error case we can't schedule next, so we have to drop the task
 			s.onErr(context.Background(), it.id, it.Next(), &ErrUnrecoverable{err})
 			return true
 		}
-		itemsToPlace.toInsert = append(itemsToPlace.toInsert, it)
+		s.batch.toInsert = append(s.batch.toInsert, it)
 
 		// distribute to the right worker.
 		select {
@@ -280,7 +285,7 @@ func (s *TreeScheduler) iterator(ctx context.Context, ts time.Time) (btree.ItemI
 		}
 
 		return true
-	}, itemsToPlace
+	}
 }
 
 // When gives us the next time the scheduler will run a task.
@@ -375,11 +380,11 @@ type Item struct {
 }
 
 func (it Item) Next() time.Time {
-	return time.Unix(it.next, 0)
+	return time.Unix(it.next, 0).UTC()
 }
 
 func (it Item) When() time.Time {
-	return time.Unix(it.when, 0)
+	return time.Unix(it.when, 0).UTC()
 }
 
 // Less tells us if one Item is less than another
