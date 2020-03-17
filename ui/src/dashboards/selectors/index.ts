@@ -6,6 +6,7 @@ import {
   getValuesForVariable,
   getTypeForVariable,
   getArgumentValuesForVariable,
+  getSelectedVariableText,
 } from 'src/variables/selectors'
 
 // Constants
@@ -28,7 +29,7 @@ export const getCheckForView = (
 
 interface DropdownValues {
   list: {name: string; value: string}[]
-  selectedKey: string
+  selectedValue: string
 }
 
 export const getVariableValuesForDropdown = (
@@ -36,17 +37,14 @@ export const getVariableValuesForDropdown = (
   variableID: string,
   contextID: string
 ): DropdownValues => {
-  const {selectedValue, values} = getValuesForVariable(
-    state,
-    variableID,
-    contextID
-  )
+  const {values} = getValuesForVariable(state, variableID, contextID)
 
   if (!values) {
-    return {list: null, selectedKey: null}
+    return {list: null, selectedValue: null}
   }
 
   const type = getTypeForVariable(state, variableID)
+  const selectedText = getSelectedVariableText(state, variableID, contextID)
 
   switch (type) {
     case 'map': {
@@ -60,13 +58,14 @@ export const getVariableValuesForDropdown = (
       }))
 
       return {
-        selectedKey: selectedValue,
+        selectedValue: selectedText,
         list,
       }
     }
     default:
-      const list = values.map(v => ({name: v, value: v}))
+      const valueCopy = values as string[]
+      const list = valueCopy.map(v => ({name: v, value: v}))
 
-      return {selectedKey: selectedValue, list}
+      return {selectedValue: selectedText, list}
   }
 }

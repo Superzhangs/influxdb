@@ -5,6 +5,7 @@ import {TimeMachinesState} from 'src/timeMachine/reducers'
 import {AppState as AppPresentationState} from 'src/shared/reducers/app'
 import {RouterState} from 'react-router-redux'
 import {MeState} from 'src/shared/reducers/me'
+import {CurrentDashboardState} from 'src/shared/reducers/currentDashboard'
 import {NoteEditorState} from 'src/dashboards/reducers/notes'
 import {DataLoadingState} from 'src/dataLoaders/reducers'
 import {OnboardingState} from 'src/onboarding/reducers'
@@ -21,6 +22,7 @@ import {OverlayState} from 'src/overlays/reducers/overlays'
 import {AutoRefreshState} from 'src/shared/reducers/autoRefresh'
 import {LimitsState} from 'src/cloud/reducers/limits'
 import {AlertBuilderState} from 'src/alerting/reducers/alertBuilder'
+import {CurrentPage} from 'src/shared/reducers/currentPage'
 
 import {ResourceState} from 'src/types'
 
@@ -29,6 +31,8 @@ export interface AppState {
   app: AppPresentationState
   autoRefresh: AutoRefreshState
   cloud: {limits: LimitsState}
+  currentPage: CurrentPage
+  currentDashboard: CurrentDashboardState
   dataLoading: DataLoadingState
   links: Links
   me: MeState

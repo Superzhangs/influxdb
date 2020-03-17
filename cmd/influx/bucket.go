@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/influxdata/influxdb"
@@ -13,12 +12,15 @@ import (
 
 type bucketSVCsFn func() (influxdb.BucketService, influxdb.OrganizationService, error)
 
-func cmdBucket(opts ...genericCLIOptFn) *cobra.Command {
-	return newCmdBucketBuilder(newBucketSVCs, opts...).cmd()
+func cmdBucket(f *globalFlags, opt genericCLIOpts) *cobra.Command {
+	builder := newCmdBucketBuilder(newBucketSVCs, opt)
+	builder.globalFlags = f
+	return builder.cmd()
 }
 
 type cmdBucketBuilder struct {
 	genericCLIOpts
+	*globalFlags
 
 	svcFn bucketSVCsFn
 
@@ -30,17 +32,9 @@ type cmdBucketBuilder struct {
 	retention   time.Duration
 }
 
-func newCmdBucketBuilder(svcsFn bucketSVCsFn, opts ...genericCLIOptFn) *cmdBucketBuilder {
-	opt := genericCLIOpts{
-		in: os.Stdin,
-		w:  os.Stdout,
-	}
-	for _, o := range opts {
-		o(&opt)
-	}
-
+func newCmdBucketBuilder(svcsFn bucketSVCsFn, opts genericCLIOpts) *cmdBucketBuilder {
 	return &cmdBucketBuilder{
-		genericCLIOpts: opt,
+		genericCLIOpts: opts,
 		svcFn:          svcsFn,
 	}
 }
@@ -77,14 +71,14 @@ func (b *cmdBucketBuilder) cmdCreate() *cobra.Command {
 	opts.mustRegister(cmd)
 
 	cmd.Flags().StringVarP(&b.description, "description", "d", "", "Description of bucket that will be created")
-	cmd.Flags().DurationVarP(&b.retention, "retention", "r", 0, "Duration in nanoseconds data will live in bucket")
+	cmd.Flags().DurationVarP(&b.retention, "retention", "r", 0, "Duration bucket will retain data. 0 is infinite. Default is 0.")
 	b.org.register(cmd, false)
 
 	return cmd
 }
 
 func (b *cmdBucketBuilder) cmdCreateRunEFn(*cobra.Command, []string) error {
-	if err := b.org.validOrgFlags(); err != nil {
+	if err := b.org.validOrgFlags(b.globalFlags); err != nil {
 		return err
 	}
 
@@ -166,8 +160,9 @@ func (b *cmdBucketBuilder) cmdDeleteRunEFn(cmd *cobra.Command, args []string) er
 }
 
 func (b *cmdBucketBuilder) cmdFind() *cobra.Command {
-	cmd := b.newCmd("find", b.cmdFindRunEFn)
-	cmd.Short = "Find buckets"
+	cmd := b.newCmd("list", b.cmdFindRunEFn)
+	cmd.Short = "List buckets"
+	cmd.Aliases = []string{"find", "ls"}
 
 	opts := flagOpts{
 		{
@@ -188,7 +183,7 @@ func (b *cmdBucketBuilder) cmdFind() *cobra.Command {
 }
 
 func (b *cmdBucketBuilder) cmdFindRunEFn(cmd *cobra.Command, args []string) error {
-	if err := b.org.validOrgFlags(); err != nil {
+	if err := b.org.validOrgFlags(b.globalFlags); err != nil {
 		return err
 	}
 
@@ -258,7 +253,7 @@ func (b *cmdBucketBuilder) cmdUpdate() *cobra.Command {
 	cmd.Flags().StringVarP(&b.id, "id", "i", "", "The bucket ID (required)")
 	cmd.Flags().StringVarP(&b.description, "description", "d", "", "Description of bucket that will be created")
 	cmd.MarkFlagRequired("id")
-	cmd.Flags().DurationVarP(&b.retention, "retention", "r", 0, "New duration data will live in bucket")
+	cmd.Flags().DurationVarP(&b.retention, "retention", "r", 0, "Duration bucket will retain data. 0 is infinite. Default is 0.")
 
 	return cmd
 }

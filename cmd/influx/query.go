@@ -14,15 +14,13 @@ var queryFlags struct {
 	org organization
 }
 
-func cmdQuery() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "query [query literal or @/path/to/query.flux]",
-		Short: "Execute a Flux query",
-		Long: `Execute a literal Flux query provided as a string,
-or execute a literal Flux query contained in a file by specifying the file prefixed with an @ sign.`,
-		Args: cobra.ExactArgs(1),
-		RunE: wrapCheckSetup(fluxQueryF),
-	}
+func cmdQuery(f *globalFlags, opts genericCLIOpts) *cobra.Command {
+	cmd := opts.newCmd("query [query literal or @/path/to/query.flux]", fluxQueryF)
+	cmd.Short = "Execute a Flux query"
+	cmd.Long = `Execute a literal Flux query provided as a string,
+or execute a literal Flux query contained in a file by specifying the file prefixed with an @ sign.`
+	cmd.Args = cobra.ExactArgs(1)
+
 	queryFlags.org.register(cmd, true)
 
 	return cmd
@@ -33,7 +31,7 @@ func fluxQueryF(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("local flag not supported for query command")
 	}
 
-	if err := queryFlags.org.validOrgFlags(); err != nil {
+	if err := queryFlags.org.validOrgFlags(&flags); err != nil {
 		return err
 	}
 
@@ -54,7 +52,7 @@ func fluxQueryF(cmd *cobra.Command, args []string) error {
 
 	flux.FinalizeBuiltIns()
 
-	r, err := getFluxREPL(flags.host, flags.token, flags.skipVerify, orgID)
+	r, err := getFluxREPL(flags.Host, flags.Token, flags.skipVerify, orgID)
 	if err != nil {
 		return fmt.Errorf("failed to get the flux REPL: %v", err)
 	}

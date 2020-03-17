@@ -1,5 +1,6 @@
 // Libraries
 import React, {PureComponent} from 'react'
+import {withRouter, WithRouterProps} from 'react-router'
 import {connect} from 'react-redux'
 
 // Components
@@ -10,6 +11,7 @@ import ViewSwitcher from 'src/shared/components/ViewSwitcher'
 // Utils
 import {GlobalAutoRefresher} from 'src/utils/AutoRefresher'
 import {getTimeRangeVars} from 'src/variables/utils/getTimeRangeVars'
+import {getTimeRangeByDashboardID} from 'src/dashboards/selectors'
 import {
   getVariableAssignments,
   getDashboardValuesStatus,
@@ -26,16 +28,17 @@ import {
   DashboardQuery,
   VariableAssignment,
   QueryViewProperties,
+  Theme,
 } from 'src/types'
 
 interface OwnProps {
-  timeRange: TimeRange
   manualRefresh: number
   properties: QueryViewProperties
-  dashboardID: string
 }
 
 interface StateProps {
+  theme: Theme
+  timeRange: TimeRange
   ranges: TimeRange | null
   timeZone: TimeZone
   variableAssignments: VariableAssignment[]
@@ -46,7 +49,7 @@ interface State {
   submitToken: number
 }
 
-type Props = OwnProps & StateProps
+type Props = OwnProps & StateProps & WithRouterProps
 
 class RefreshingView extends PureComponent<Props, State> {
   public static defaultProps = {
@@ -69,7 +72,7 @@ class RefreshingView extends PureComponent<Props, State> {
   }
 
   public render() {
-    const {ranges, properties, manualRefresh, timeZone} = this.props
+    const {ranges, properties, manualRefresh, timeZone, theme} = this.props
     const {submitToken} = this.state
 
     return (
@@ -105,6 +108,7 @@ class RefreshingView extends PureComponent<Props, State> {
                 timeRange={ranges}
                 statuses={statuses}
                 timeZone={timeZone}
+                theme={theme}
               />
             </EmptyQueryView>
           )
@@ -150,21 +154,23 @@ class RefreshingView extends PureComponent<Props, State> {
 }
 
 const mstp = (state: AppState, ownProps: OwnProps): StateProps => {
-  const variableAssignments = getVariableAssignments(
-    state,
-    ownProps.dashboardID
-  )
-  const valuesStatus = getDashboardValuesStatus(state, ownProps.dashboardID)
-  const {properties} = ownProps
-  const timeRange = getActiveTimeRange(ownProps.timeRange, properties.queries)
-  const timeZone = state.app.persisted.timeZone
+  const dashboard = state.currentDashboard.id
+  const variableAssignments = getVariableAssignments(state, dashboard)
+  const timeRange = getTimeRangeByDashboardID(state, dashboard)
+  const valuesStatus = getDashboardValuesStatus(state, dashboard)
+  const ranges = getActiveTimeRange(timeRange, ownProps.properties.queries)
+  const {timeZone, theme} = state.app.persisted
 
   return {
-    ranges: timeRange,
+    timeRange,
+    ranges,
     timeZone,
     variableAssignments,
     variablesStatus: valuesStatus,
+    theme,
   }
 }
 
-export default connect<StateProps, {}, OwnProps>(mstp)(RefreshingView)
+export default connect<StateProps, {}, OwnProps>(mstp)(
+  withRouter(RefreshingView)
+)

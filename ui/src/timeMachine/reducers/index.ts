@@ -633,9 +633,10 @@ export const timeMachineReducer = (
       return produce(state, draftState => {
         const {activeQueryIndex} = action.payload
 
-        draftState.activeQueryIndex = activeQueryIndex
-
-        resetBuilderState(draftState)
+        if (activeQueryIndex < draftState.draftQueries.length) {
+          draftState.activeQueryIndex = activeQueryIndex
+          resetBuilderState(draftState)
+        }
       })
     }
 
@@ -802,6 +803,7 @@ export const timeMachineReducer = (
 
         tag.key = key
         tag.values = []
+        tag.aggregateFunctionType = 'filter'
       })
     }
 
@@ -811,7 +813,6 @@ export const timeMachineReducer = (
         const draftQuery = draftState.draftQueries[draftState.activeQueryIndex]
 
         draftQuery.builderConfig.tags[index].values = values
-
         buildActiveQuery(draftState)
       })
     }

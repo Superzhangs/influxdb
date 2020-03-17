@@ -127,6 +127,11 @@ func FromHTTPRequest(addr string) ReaderFn {
 		if _, err := io.Copy(&buf, resp.Body); err != nil {
 			return nil, err
 		}
+
+		if resp.StatusCode/100 != 2 {
+			return nil, fmt.Errorf("bad response: status_code=%d body=%q", resp.StatusCode, strings.TrimSpace(buf.String()))
+		}
+
 		return &buf, nil
 	}
 }
@@ -218,7 +223,7 @@ type Object struct {
 
 // Name returns the name of the kind.
 func (k Object) Name() string {
-	return k.Metadata.references("name").String()
+	return k.Metadata.references(fieldName).String()
 }
 
 // Pkg is the model for a package. The resources are more generic that one might
@@ -440,7 +445,7 @@ func (p *Pkg) buckets() []*bucket {
 		buckets = append(buckets, b)
 	}
 
-	sort.Slice(buckets, func(i, j int) bool { return buckets[i].name.String() < buckets[j].name.String() })
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i].Name() < buckets[j].Name() })
 
 	return buckets
 }
@@ -631,17 +636,37 @@ func (p *Pkg) graphResources() error {
 
 func (p *Pkg) graphBuckets() *parseErr {
 	p.mBuckets = make(map[string]*bucket)
-	return p.eachResource(KindBucket, 2, func(o Object) []validationErr {
+	uniqNames := make(map[string]bool)
+	return p.eachResource(KindBucket, bucketNameMinLength, func(o Object) []validationErr {
 		nameRef := p.getRefWithKnownEnvs(o.Metadata, fieldName)
 		if _, ok := p.mBuckets[nameRef.String()]; ok {
-			return []validationErr{{
-				Field: fieldName,
-				Msg:   "duplicate name: " + nameRef.String(),
-			}}
+			return []validationErr{
+				objectValidationErr(fieldMetadata, validationErr{
+					Field: fieldName,
+					Msg:   "duplicate name: " + nameRef.String(),
+				}),
+			}
 		}
+
+		displayNameRef := p.getRefWithKnownEnvs(o.Spec, fieldName)
+
+		name := nameRef.String()
+		if displayName := displayNameRef.String(); displayName != "" {
+			name = displayName
+		}
+		if uniqNames[name] {
+			return []validationErr{
+				objectValidationErr(fieldSpec, validationErr{
+					Field: fieldName,
+					Msg:   "duplicate name: " + nameRef.String(),
+				}),
+			}
+		}
+		uniqNames[name] = true
 
 		bkt := &bucket{
 			name:        nameRef,
+			displayName: displayNameRef,
 			Description: o.Spec.stringShort(fieldDescription),
 		}
 		if rules, ok := o.Spec[fieldBucketRetentionRules].(retentionRules); ok {
@@ -654,16 +679,16 @@ func (p *Pkg) graphBuckets() *parseErr {
 				})
 			}
 		}
-		p.setRefs(bkt.name)
+		p.setRefs(bkt.name, bkt.displayName)
 
 		failures := p.parseNestedLabels(o.Spec, func(l *label) error {
 			bkt.labels = append(bkt.labels, l)
-			p.mLabels[l.Name()].setMapping(bkt, false)
+			p.mLabels[l.PkgName()].setMapping(bkt, false)
 			return nil
 		})
 		sort.Sort(bkt.labels)
 
-		p.mBuckets[o.Name()] = bkt
+		p.mBuckets[bkt.PkgName()] = bkt
 
 		return append(failures, bkt.valid()...)
 	})
@@ -671,24 +696,44 @@ func (p *Pkg) graphBuckets() *parseErr {
 
 func (p *Pkg) graphLabels() *parseErr {
 	p.mLabels = make(map[string]*label)
-	return p.eachResource(KindLabel, 2, func(o Object) []validationErr {
+	uniqNames := make(map[string]bool)
+	return p.eachResource(KindLabel, labelNameMinLength, func(o Object) []validationErr {
 		nameRef := p.getRefWithKnownEnvs(o.Metadata, fieldName)
 		if _, ok := p.mLabels[nameRef.String()]; ok {
-			return []validationErr{{
-				Field: fieldName,
-				Msg:   "duplicate name: " + o.Name(),
-			}}
+			return []validationErr{
+				objectValidationErr(fieldMetadata, validationErr{
+					Field: fieldName,
+					Msg:   "duplicate name: " + nameRef.String(),
+				}),
+			}
 		}
+
+		displayNameRef := p.getRefWithKnownEnvs(o.Spec, fieldName)
+
+		name := nameRef.String()
+		if displayName := displayNameRef.String(); displayName != "" {
+			name = displayName
+		}
+		if uniqNames[name] {
+			return []validationErr{
+				objectValidationErr(fieldSpec, validationErr{
+					Field: fieldName,
+					Msg:   "duplicate name: " + nameRef.String(),
+				}),
+			}
+		}
+		uniqNames[name] = true
 
 		l := &label{
 			name:        nameRef,
+			displayName: displayNameRef,
 			Color:       o.Spec.stringShort(fieldLabelColor),
 			Description: o.Spec.stringShort(fieldDescription),
 		}
-		p.mLabels[l.Name()] = l
-		p.setRefs(nameRef)
+		p.mLabels[l.PkgName()] = l
+		p.setRefs(nameRef, displayNameRef)
 
-		return nil
+		return l.valid()
 	})
 }
 
@@ -746,7 +791,7 @@ func (p *Pkg) graphChecks() *parseErr {
 
 			failures := p.parseNestedLabels(o.Spec, func(l *label) error {
 				ch.labels = append(ch.labels, l)
-				p.mLabels[l.Name()].setMapping(ch, false)
+				p.mLabels[l.PkgName()].setMapping(ch, false)
 				return nil
 			})
 			sort.Sort(ch.labels)
@@ -776,7 +821,7 @@ func (p *Pkg) graphDashboards() *parseErr {
 
 		failures := p.parseNestedLabels(o.Spec, func(l *label) error {
 			dash.labels = append(dash.labels, l)
-			p.mLabels[l.Name()].setMapping(dash, false)
+			p.mLabels[l.PkgName()].setMapping(dash, false)
 			return nil
 		})
 		sort.Sort(dash.labels)
@@ -848,7 +893,7 @@ func (p *Pkg) graphNotificationEndpoints() *parseErr {
 			}
 			failures := p.parseNestedLabels(o.Spec, func(l *label) error {
 				endpoint.labels = append(endpoint.labels, l)
-				p.mLabels[l.Name()].setMapping(endpoint, false)
+				p.mLabels[l.PkgName()].setMapping(endpoint, false)
 				return nil
 			})
 			sort.Sort(endpoint.labels)
@@ -899,7 +944,7 @@ func (p *Pkg) graphNotificationRules() *parseErr {
 
 		failures := p.parseNestedLabels(o.Spec, func(l *label) error {
 			rule.labels = append(rule.labels, l)
-			p.mLabels[l.Name()].setMapping(rule, false)
+			p.mLabels[l.PkgName()].setMapping(rule, false)
 			return nil
 		})
 		sort.Sort(rule.labels)
@@ -925,7 +970,7 @@ func (p *Pkg) graphTasks() *parseErr {
 
 		failures := p.parseNestedLabels(o.Spec, func(l *label) error {
 			t.labels = append(t.labels, l)
-			p.mLabels[l.Name()].setMapping(t, false)
+			p.mLabels[l.PkgName()].setMapping(t, false)
 			return nil
 		})
 		sort.Sort(t.labels)
@@ -946,7 +991,7 @@ func (p *Pkg) graphTelegrafs() *parseErr {
 
 		failures := p.parseNestedLabels(o.Spec, func(l *label) error {
 			tele.labels = append(tele.labels, l)
-			p.mLabels[l.Name()].setMapping(tele, false)
+			p.mLabels[l.PkgName()].setMapping(tele, false)
 			return nil
 		})
 		sort.Sort(tele.labels)
@@ -989,7 +1034,7 @@ func (p *Pkg) graphVariables() *parseErr {
 
 		failures := p.parseNestedLabels(o.Spec, func(l *label) error {
 			newVar.labels = append(newVar.labels, l)
-			p.mLabels[l.Name()].setMapping(newVar, false)
+			p.mLabels[l.PkgName()].setMapping(newVar, false)
 			return nil
 		})
 		sort.Sort(newVar.labels)
@@ -1040,10 +1085,10 @@ func (p *Pkg) eachResource(resourceKind Kind, minNameLen int, fn func(o Object) 
 				Kind: k.Type.String(),
 				Idx:  intPtr(i),
 				ValidationErrs: []validationErr{
-					{
-						Field: "name",
+					objectValidationErr(fieldMetadata, validationErr{
+						Field: fieldName,
 						Msg:   fmt.Sprintf("must be a string of at least %d chars in length", minNameLen),
-					},
+					}),
 				},
 			})
 			continue
@@ -1165,23 +1210,24 @@ func parseChart(r Resource) (chart, []validationErr) {
 	c := chart{
 		Kind:        ck,
 		Name:        r.Name(),
-		Prefix:      r.stringShort(fieldPrefix),
-		TickPrefix:  r.stringShort(fieldChartTickPrefix),
-		Suffix:      r.stringShort(fieldSuffix),
-		TickSuffix:  r.stringShort(fieldChartTickSuffix),
+		BinSize:     r.intShort(fieldChartBinSize),
+		BinCount:    r.intShort(fieldChartBinCount),
+		Geom:        r.stringShort(fieldChartGeom),
+		Height:      r.intShort(fieldChartHeight),
 		Note:        r.stringShort(fieldChartNote),
 		NoteOnEmpty: r.boolShort(fieldChartNoteOnEmpty),
+		Position:    r.stringShort(fieldChartPosition),
+		Prefix:      r.stringShort(fieldPrefix),
 		Shade:       r.boolShort(fieldChartShade),
+		Suffix:      r.stringShort(fieldSuffix),
+		TickPrefix:  r.stringShort(fieldChartTickPrefix),
+		TickSuffix:  r.stringShort(fieldChartTickSuffix),
+		TimeFormat:  r.stringShort(fieldChartTimeFormat),
+		Width:       r.intShort(fieldChartWidth),
 		XCol:        r.stringShort(fieldChartXCol),
 		YCol:        r.stringShort(fieldChartYCol),
 		XPos:        r.intShort(fieldChartXPos),
 		YPos:        r.intShort(fieldChartYPos),
-		Height:      r.intShort(fieldChartHeight),
-		Width:       r.intShort(fieldChartWidth),
-		Geom:        r.stringShort(fieldChartGeom),
-		BinSize:     r.intShort(fieldChartBinSize),
-		BinCount:    r.intShort(fieldChartBinCount),
-		Position:    r.stringShort(fieldChartPosition),
 	}
 
 	if presLeg, ok := r[fieldChartLegend].(legend); ok {
@@ -1251,6 +1297,23 @@ func parseChart(r Resource) (chart, []validationErr) {
 				Domain: domain,
 			})
 		}
+	}
+
+	if tableOptsRes, ok := ifaceToResource(r[fieldChartTableOptions]); ok {
+		c.TableOptions = tableOptions{
+			VerticalTimeAxis: tableOptsRes.boolShort(fieldChartTableOptionVerticalTimeAxis),
+			SortByField:      tableOptsRes.stringShort(fieldChartTableOptionSortBy),
+			Wrapping:         tableOptsRes.stringShort(fieldChartTableOptionWrapping),
+			FixFirstColumn:   tableOptsRes.boolShort(fieldChartTableOptionFixFirstColumn),
+		}
+	}
+
+	for _, fieldOptRes := range r.slcResource(fieldChartFieldOptions) {
+		c.FieldOptions = append(c.FieldOptions, fieldOption{
+			FieldName:   fieldOptRes.stringShort(fieldChartFieldOptionFieldName),
+			DisplayName: fieldOptRes.stringShort(fieldChartFieldOptionDisplayName),
+			Visible:     fieldOptRes.boolShort(fieldChartFieldOptionVisible),
+		})
 	}
 
 	if failures = append(failures, c.validProperties()...); len(failures) > 0 {
@@ -1712,6 +1775,13 @@ func IsParseErr(err error) bool {
 		return false
 	}
 	return IsParseErr(iErr.Err)
+}
+
+func objectValidationErr(field string, vErrs ...validationErr) validationErr {
+	return validationErr{
+		Field:  field,
+		Nested: vErrs,
+	}
 }
 
 func normStr(s string) string {

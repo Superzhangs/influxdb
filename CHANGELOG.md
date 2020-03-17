@@ -1,14 +1,82 @@
+## v2.0.0-beta.7 [unreleased]
+
+### Features
+
+1. [17232](https://github.com/influxdata/influxdb/pull/17232): Allow dashboards to optionally be displayed in light mode
+1. [17273](https://github.com/influxdata/influxdb/pull/17273): Add shell completions command for the influx cli
+
+### Bug Fixes
+
+1. [17240](https://github.com/influxdata/influxdb/pull/17240): NodeJS logo displays properly in Firefox
+
+### UI Improvements
+
+1. [17291](https://github.com/influxdata/influxdb/pull/17291): Redesign OSS Login page
+1. [17297](https://github.com/influxdata/influxdb/pull/17297): Display graphic when a dashboard has no cells
+
+## v2.0.0-beta.6 [2020-03-12]
+
+### Features
+
+1. [17085](https://github.com/influxdata/influxdb/pull/17085): Clicking on bucket name takes user to Data Explorer with bucket selected
+1. [17095](https://github.com/influxdata/influxdb/pull/17095): Extend pkger dashboards with table view support
+1. [17114](https://github.com/influxdata/influxdb/pull/17114): Allow for retention to be provided to influx setup command as a duration
+1. [17138](https://github.com/influxdata/influxdb/pull/17138): Extend pkger export all capabilities to support filtering by lable name and resource type
+1. [17049](https://github.com/influxdata/influxdb/pull/17049): Added new login and sign-up screen that for cloud users that allows direct login from their region
+1. [17170](https://github.com/influxdata/influxdb/pull/17170): Added new cli multiple profiles management tool
+
+### Bug Fixes
+
+1. [17039](https://github.com/influxdata/influxdb/pull/17039): Fixed issue where tasks are exported for notification rules
+1. [17042](https://github.com/influxdata/influxdb/pull/17042): Fixed issue where tasks are not exported when exporting by org id
+1. [17070](https://github.com/influxdata/influxdb/pull/17070): Fixed issue where tasks with imports in query break in pkger
+1. [17028](https://github.com/influxdata/influxdb/pull/17028): Fixed issue where selecting an aggregate function in the script editor was not adding the function to a new line
+1. [17072](https://github.com/influxdata/influxdb/pull/17072): Fixed issue where creating a variable of type map was piping the incorrect value when map variables were used in queries
+1. [17050](https://github.com/influxdata/influxdb/pull/17050): Added missing user names to auth CLI commands
+1. [17113](https://github.com/influxdata/influxdb/pull/17113): Disabled group functionality for check query builder
+1. [17120](https://github.com/influxdata/influxdb/pull/17120): Fixed cell configuration error that was popping up when users create a dashboard and accessed the disk usage cell for the first time
+1. [17097](https://github.com/influxdata/influxdb/pull/17097): Listing all the default variables in the VariableTab of the script editor
+1. [17049](https://github.com/influxdata/influxdb/pull/17049): Fixed bug that was preventing the interval status on the dashboard header from refreshing on selections
+1. [17161](https://github.com/influxdata/influxdb/pull/17161): Update table custom decimal feature for tables to update table onFocus
+1. [17168](https://github.com/influxdata/influxdb/pull/17168): Fixed UI bug that was setting Telegraf config buttons off-center and was resizing config selections when filtering through the data
+1. [17208](https://github.com/influxdata/influxdb/pull/17208): Fixed UI bug that was setting causing dashboard cells to error when the a v.bucket was being used and was being configured for the first time
+1. [17214](https://github.com/influxdata/influxdb/pull/17214): Fix appearance of client library logos in Safari
+1. [17202](https://github.com/influxdata/influxdb/pull/17202): Fixed UI bug that was preventing checks created with the query builder from updating. Also fixed a bug that was preventing dashboard cell queries from working properly when creating group queries using the query builder
+
+## v2.0.0-beta.5 [2020-02-27]
+
+### Features
+
+1. [16991](https://github.com/influxdata/influxdb/pull/16991): Update Flux functions list for v0.61
+1. [16574](https://github.com/influxdata/influxdb/pull/16574): Add secure flag to session cookie
+
+### Bug Fixes
+
+1. [16919](https://github.com/influxdata/influxdb/pull/16919): Sort dashboards on homepage alphabetically
+1. [16934](https://github.com/influxdata/influxdb/pull/16934): Tokens page now sorts by status
+1. [16931](https://github.com/influxdata/influxdb/pull/16931): Set the default value of tags in a Check
+1. [16935](https://github.com/influxdata/influxdb/pull/16935): Fix sort by variable type
+1. [16973](https://github.com/influxdata/influxdb/pull/16973): Calculate correct stacked line cumulative when lines are different lengths
+1. [17010](https://github.com/influxdata/influxdb/pull/17010): Fixed scrollbar issue where resource cards would overflow the parent container rather than be hidden and scrollable
+1. [16992](https://github.com/influxdata/influxdb/pull/16992): Query Builder now groups on column values, not tag values
+1. [17013](https://github.com/influxdata/influxdb/pull/17013): Scatterplots can once again render the tooltip correctly
+1. [17027](https://github.com/influxdata/influxdb/pull/17027): Drop pkger gauge chart requirement for color threshold type
+1. [17040](https://github.com/influxdata/influxdb/pull/17040): Fixed bug that was preventing the interval status on the dashboard header from refreshing on selections
+1. [16961](https://github.com/influxdata/influxdb/pull/16961): Remove cli confirmation of secret, add an optional parameter of secret value
+
 ## v2.0.0-beta.4 [2020-02-14]
 
 ### Features
+
 1. [16855](https://github.com/influxdata/influxdb/pull/16855): Added labels to buckets in UI
 1. [16842](https://github.com/influxdata/influxdb/pull/16842): Connect monaco editor to Flux LSP server
 1. [16856](https://github.com/influxdata/influxdb/pull/16856): Update Flux to v0.59.6
 
 ### Bug Fixes
+
 1. [16852](https://github.com/influxdata/influxdb/pull/16852): Revert for bad indexing of UserResourceMappings and Authorizations
 1. [15911](https://github.com/influxdata/influxdb/pull/15911): Gauge no longer allowed to become too small
-1. [16878](https://github.com/influxdata/influxdb/pull/16878): Fix issue with INFLUX_TOKEN env vars being overridden by default token 
+1. [16878](https://github.com/influxdata/influxdb/pull/16878): Fix issue with INFLUX_TOKEN env vars being overridden by default token
 
 ## v2.0.0-beta.3 [2020-02-11]
 

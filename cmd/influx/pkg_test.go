@@ -3,7 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"errors"
+	"io"
 	"io/ioutil"
 	"os"
 	"path"
@@ -13,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/influxdata/influxdb"
-	"github.com/influxdata/influxdb/kit/errors"
 	"github.com/influxdata/influxdb/mock"
+
+	"github.com/influxdata/influxdb"
 	"github.com/influxdata/influxdb/pkger"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -33,22 +34,27 @@ func TestCmdPkg(t *testing.T) {
 		}
 	}
 
-	setViperOptions()
-
 	t.Run("export all", func(t *testing.T) {
+		defaultAssertFn := func(t *testing.T, pkg *pkger.Pkg) {
+			t.Helper()
+			sum := pkg.Summary()
+
+			require.Len(t, sum.Buckets, 1)
+			assert.Equal(t, "bucket1", sum.Buckets[0].Name)
+		}
+
 		expectedOrgID := influxdb.ID(9000)
 
 		tests := []struct {
 			pkgFileArgs
+			assertFn func(t *testing.T, pkg *pkger.Pkg)
 		}{
 			{
 				pkgFileArgs: pkgFileArgs{
 					name:     "yaml out with org id",
 					encoding: pkger.EncodingYAML,
 					filename: "pkg_0.yml",
-					flags: []flagArg{
-						{name: "org-id", val: expectedOrgID.String()},
-					},
+					args:     []string{"--org-id=" + expectedOrgID.String()},
 				},
 			},
 			{
@@ -56,9 +62,7 @@ func TestCmdPkg(t *testing.T) {
 					name:     "yaml out with org name",
 					encoding: pkger.EncodingYAML,
 					filename: "pkg_0.yml",
-					flags: []flagArg{
-						{name: "org", val: "influxdata"},
-					},
+					args:     []string{"--org=influxdata"},
 				},
 			},
 			{
@@ -77,9 +81,109 @@ func TestCmdPkg(t *testing.T) {
 					envVars:  map[string]string{"INFLUX_ORG_ID": expectedOrgID.String()},
 				},
 			},
+			{
+				pkgFileArgs: pkgFileArgs{
+					name:     "with labelName filter",
+					encoding: pkger.EncodingYAML,
+					filename: "pkg_0.yml",
+					args: []string{
+						"--org-id=" + expectedOrgID.String(),
+						"--filter=labelName=foo",
+					},
+				},
+				assertFn: func(t *testing.T, pkg *pkger.Pkg) {
+					defaultAssertFn(t, pkg)
+
+					sum := pkg.Summary()
+
+					require.Len(t, sum.Labels, 1)
+					assert.Equal(t, "foo", sum.Labels[0].Name)
+				},
+			},
+			{
+				pkgFileArgs: pkgFileArgs{
+					name:     "with multiple labelName filters",
+					encoding: pkger.EncodingYAML,
+					filename: "pkg_0.yml",
+					args: []string{
+						"--org-id=" + expectedOrgID.String(),
+						"--filter=labelName=foo",
+						"--filter=labelName=bar",
+					},
+				},
+				assertFn: func(t *testing.T, pkg *pkger.Pkg) {
+					defaultAssertFn(t, pkg)
+
+					sum := pkg.Summary()
+
+					require.Len(t, sum.Labels, 2)
+					assert.Equal(t, "bar", sum.Labels[0].Name)
+					assert.Equal(t, "foo", sum.Labels[1].Name)
+				},
+			},
+			{
+				pkgFileArgs: pkgFileArgs{
+					name:     "with resourceKind filter",
+					encoding: pkger.EncodingYAML,
+					filename: "pkg_0.yml",
+					args: []string{
+						"--org-id=" + expectedOrgID.String(),
+						"--filter=resourceKind=Dashboard",
+					},
+				},
+				assertFn: func(t *testing.T, pkg *pkger.Pkg) {
+					sum := pkg.Summary()
+
+					require.Len(t, sum.Dashboards, 1)
+					assert.Equal(t, "Dashboard", sum.Dashboards[0].Name)
+				},
+			},
+			{
+				pkgFileArgs: pkgFileArgs{
+					name:     "with multiple resourceKind filter",
+					encoding: pkger.EncodingYAML,
+					filename: "pkg_0.yml",
+					args: []string{
+						"--org-id=" + expectedOrgID.String(),
+						"--filter=resourceKind=Dashboard",
+						"--filter=resourceKind=Bucket",
+					},
+				},
+				assertFn: func(t *testing.T, pkg *pkger.Pkg) {
+					sum := pkg.Summary()
+
+					require.Len(t, sum.Buckets, 1)
+					assert.Equal(t, "Bucket", sum.Buckets[0].Name)
+					require.Len(t, sum.Dashboards, 1)
+					assert.Equal(t, "Dashboard", sum.Dashboards[0].Name)
+				},
+			},
+			{
+				pkgFileArgs: pkgFileArgs{
+					name:     "with mixed resourceKind and labelName filters",
+					encoding: pkger.EncodingYAML,
+					filename: "pkg_0.yml",
+					args: []string{
+						"--org-id=" + expectedOrgID.String(),
+						"--filter=labelName=foo",
+						"--filter=resourceKind=Dashboard",
+						"--filter=resourceKind=Bucket",
+					},
+				},
+				assertFn: func(t *testing.T, pkg *pkger.Pkg) {
+					sum := pkg.Summary()
+
+					require.Len(t, sum.Labels, 1)
+					assert.Equal(t, "foo", sum.Labels[0].Name)
+					require.Len(t, sum.Buckets, 1)
+					assert.Equal(t, "Bucket", sum.Buckets[0].Name)
+					require.Len(t, sum.Dashboards, 1)
+					assert.Equal(t, "Dashboard", sum.Dashboards[0].Name)
+				},
+			},
 		}
 
-		cmdFn := func() *cobra.Command {
+		cmdFn := func(_ *globalFlags, opt genericCLIOpts) *cobra.Command {
 			pkgSVC := &fakePkgSVC{
 				createFn: func(_ context.Context, opts ...pkger.CreatePkgSetFn) (*pkger.Pkg, error) {
 					opt := pkger.CreateOpt{}
@@ -88,11 +192,34 @@ func TestCmdPkg(t *testing.T) {
 							return nil, err
 						}
 					}
-					if !opt.OrgIDs[expectedOrgID] {
+
+					orgIDOpt := opt.OrgIDs[0]
+					if orgIDOpt.OrgID != expectedOrgID {
 						return nil, errors.New("did not provide expected orgID")
 					}
 
 					var pkg pkger.Pkg
+					for _, labelName := range orgIDOpt.LabelNames {
+						pkg.Objects = append(pkg.Objects, pkger.Object{
+							APIVersion: pkger.APIVersion,
+							Type:       pkger.KindLabel,
+							Metadata:   pkger.Resource{"name": labelName},
+						})
+					}
+					if len(orgIDOpt.ResourceKinds) > 0 {
+						for _, k := range orgIDOpt.ResourceKinds {
+							pkg.Objects = append(pkg.Objects, pkger.Object{
+								APIVersion: pkger.APIVersion,
+								Type:       k,
+								Metadata: pkger.Resource{
+									"name": k.String(),
+								},
+							})
+						}
+						// return early so we don't get the default bucket
+						return &pkg, nil
+					}
+
 					pkg.Objects = append(pkg.Objects, pkger.Object{
 						APIVersion: pkger.APIVersion,
 						Type:       pkger.KindBucket,
@@ -101,16 +228,16 @@ func TestCmdPkg(t *testing.T) {
 					return &pkg, nil
 				},
 			}
-			builder := newCmdPkgBuilder(fakeSVCFn(pkgSVC), in(new(bytes.Buffer)))
-			return builder.cmdPkgExportAll()
+			return newCmdPkgBuilder(fakeSVCFn(pkgSVC), opt).cmd()
 		}
-		for _, tt := range tests {
-			testPkgWrites(t, cmdFn, tt.pkgFileArgs, func(t *testing.T, pkg *pkger.Pkg) {
-				sum := pkg.Summary()
 
-				require.Len(t, sum.Buckets, 1)
-				assert.Equal(t, "bucket1", sum.Buckets[0].Name)
-			})
+		for _, tt := range tests {
+			tt.pkgFileArgs.args = append([]string{"pkg", "export", "all"}, tt.pkgFileArgs.args...)
+			assertFn := defaultAssertFn
+			if tt.assertFn != nil {
+				assertFn = tt.assertFn
+			}
+			testPkgWrites(t, cmdFn, tt.pkgFileArgs, assertFn)
 		}
 	})
 
@@ -193,7 +320,7 @@ func TestCmdPkg(t *testing.T) {
 			},
 		}
 
-		cmdFn := func() *cobra.Command {
+		cmdFn := func(_ *globalFlags, opt genericCLIOpts) *cobra.Command {
 			pkgSVC := &fakePkgSVC{
 				createFn: func(_ context.Context, opts ...pkger.CreatePkgSetFn) (*pkger.Pkg, error) {
 					var opt pkger.CreateOpt
@@ -219,19 +346,21 @@ func TestCmdPkg(t *testing.T) {
 					return &pkg, nil
 				},
 			}
-			builder := newCmdPkgBuilder(fakeSVCFn(pkgSVC), in(new(bytes.Buffer)))
-			return builder.cmdPkgExport()
+
+			builder := newCmdPkgBuilder(fakeSVCFn(pkgSVC), opt)
+			return builder.cmd()
 		}
 		for _, tt := range tests {
-			tt.flags = append(tt.flags,
-				flagArg{"buckets", idsStr(tt.bucketIDs...)},
-				flagArg{"endpoints", idsStr(tt.endpointIDs...)},
-				flagArg{"dashboards", idsStr(tt.dashIDs...)},
-				flagArg{"labels", idsStr(tt.labelIDs...)},
-				flagArg{"rules", idsStr(tt.ruleIDs...)},
-				flagArg{"tasks", idsStr(tt.taskIDs...)},
-				flagArg{"telegraf-configs", idsStr(tt.telegrafIDs...)},
-				flagArg{"variables", idsStr(tt.varIDs...)},
+			tt.args = append(tt.args,
+				"pkg", "export",
+				"--buckets="+idsStr(tt.bucketIDs...),
+				"--endpoints="+idsStr(tt.endpointIDs...),
+				"--dashboards="+idsStr(tt.dashIDs...),
+				"--labels="+idsStr(tt.labelIDs...),
+				"--rules="+idsStr(tt.ruleIDs...),
+				"--tasks="+idsStr(tt.taskIDs...),
+				"--telegraf-configs="+idsStr(tt.telegrafIDs...),
+				"--variables="+idsStr(tt.varIDs...),
 			)
 
 			testPkgWrites(t, cmdFn, tt.pkgFileArgs, func(t *testing.T, pkg *pkger.Pkg) {
@@ -283,8 +412,17 @@ func TestCmdPkg(t *testing.T) {
 
 	t.Run("validate", func(t *testing.T) {
 		t.Run("pkg is valid returns no error", func(t *testing.T) {
-			cmd := newCmdPkgBuilder(fakeSVCFn(new(fakePkgSVC))).cmdPkgValidate()
+			builder := newInfluxCmdBuilder(
+				in(new(bytes.Buffer)),
+				out(ioutil.Discard),
+			)
+			cmd := builder.cmd(func(f *globalFlags, opt genericCLIOpts) *cobra.Command {
+				return newCmdPkgBuilder(fakeSVCFn(new(fakePkgSVC)), opt).cmd()
+			})
+
 			cmd.SetArgs([]string{
+				"pkg",
+				"validate",
 				"--file=../../pkger/testdata/bucket.yml",
 				"-f=../../pkger/testdata/label.yml",
 			})
@@ -294,11 +432,18 @@ func TestCmdPkg(t *testing.T) {
 		t.Run("pkg is invalid returns error", func(t *testing.T) {
 			// pkgYml is invalid because it is missing a name and wrong apiVersion
 			const pkgYml = `apiVersion: 0.1.0
-kind: Bucket
-metadata:
-`
-			b := newCmdPkgBuilder(fakeSVCFn(new(fakePkgSVC)), in(strings.NewReader(pkgYml)), out(ioutil.Discard))
-			cmd := b.cmdPkgValidate()
+	kind: Bucket
+	metadata:
+	`
+			builder := newInfluxCmdBuilder(
+				in(strings.NewReader(pkgYml)),
+				out(ioutil.Discard),
+			)
+			cmd := builder.cmd(func(f *globalFlags, opt genericCLIOpts) *cobra.Command {
+				return newCmdPkgBuilder(fakeSVCFn(new(fakePkgSVC)), opt).cmd()
+			})
+			cmd.SetArgs([]string{"pkg", "validate"})
+
 			require.Error(t, cmd.Execute())
 		})
 	})
@@ -375,35 +520,25 @@ func Test_readFilesFromPath(t *testing.T) {
 	})
 }
 
-type flagArg struct{ name, val string }
-
-func (s flagArg) String() string {
-	return fmt.Sprintf("--%s=%s", s.name, s.val)
-}
-
-func flagArgs(fArgs ...flagArg) []string {
-	var args []string
-	for _, f := range fArgs {
-		args = append(args, f.String())
-	}
-	return args
-}
-
 type pkgFileArgs struct {
 	name     string
 	filename string
 	encoding pkger.Encoding
-	flags    []flagArg
+	args     []string
 	envVars  map[string]string
 }
 
-func testPkgWrites(t *testing.T, newCmdFn func() *cobra.Command, args pkgFileArgs, assertFn func(t *testing.T, pkg *pkger.Pkg)) {
+func testPkgWrites(t *testing.T, newCmdFn func(*globalFlags, genericCLIOpts) *cobra.Command, args pkgFileArgs, assertFn func(t *testing.T, pkg *pkger.Pkg)) {
 	t.Helper()
 
 	defer addEnvVars(t, args.envVars)()
 
-	wrappedCmdFn := func() *cobra.Command {
-		cmd := newCmdFn()
+	wrappedCmdFn := func(w io.Writer) *cobra.Command {
+		builder := newInfluxCmdBuilder(
+			in(new(bytes.Buffer)),
+			out(w),
+		)
+		cmd := builder.cmd(newCmdFn)
 		cmd.SetArgs([]string{}) // clears mess from test runner coming into cobra cli via stdin
 		return cmd
 	}
@@ -412,7 +547,7 @@ func testPkgWrites(t *testing.T, newCmdFn func() *cobra.Command, args pkgFileArg
 	t.Run(path.Join(args.name, "buffer"), testPkgWritesToBuffer(wrappedCmdFn, args, assertFn))
 }
 
-func testPkgWritesFile(newCmdFn func() *cobra.Command, args pkgFileArgs, assertFn func(t *testing.T, pkg *pkger.Pkg)) func(t *testing.T) {
+func testPkgWritesFile(newCmdFn func(w io.Writer) *cobra.Command, args pkgFileArgs, assertFn func(t *testing.T, pkg *pkger.Pkg)) func(t *testing.T) {
 	return func(t *testing.T) {
 		t.Helper()
 
@@ -421,8 +556,8 @@ func testPkgWritesFile(newCmdFn func() *cobra.Command, args pkgFileArgs, assertF
 
 		pathToFile := filepath.Join(tempDir, args.filename)
 
-		cmd := newCmdFn()
-		cmd.SetArgs(flagArgs(append(args.flags, flagArg{name: "file", val: pathToFile})...))
+		cmd := newCmdFn(ioutil.Discard)
+		cmd.SetArgs(append(args.args, "--file="+pathToFile))
 
 		require.NoError(t, cmd.Execute())
 
@@ -433,14 +568,13 @@ func testPkgWritesFile(newCmdFn func() *cobra.Command, args pkgFileArgs, assertF
 	}
 }
 
-func testPkgWritesToBuffer(newCmdFn func() *cobra.Command, args pkgFileArgs, assertFn func(t *testing.T, pkg *pkger.Pkg)) func(t *testing.T) {
+func testPkgWritesToBuffer(newCmdFn func(w io.Writer) *cobra.Command, args pkgFileArgs, assertFn func(t *testing.T, pkg *pkger.Pkg)) func(t *testing.T) {
 	return func(t *testing.T) {
 		t.Helper()
 
 		var buf bytes.Buffer
-		cmd := newCmdFn()
-		cmd.SetOut(&buf)
-		cmd.SetArgs(flagArgs(args.flags...))
+		cmd := newCmdFn(&buf)
+		cmd.SetArgs(args.args)
 
 		require.NoError(t, cmd.Execute())
 

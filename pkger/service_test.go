@@ -59,6 +59,9 @@ func TestService(t *testing.T) {
 				testfileRunner(t, "testdata/bucket.yml", func(t *testing.T, pkg *Pkg) {
 					fakeBktSVC := mock.NewBucketService()
 					fakeBktSVC.FindBucketByNameFn = func(_ context.Context, orgID influxdb.ID, name string) (*influxdb.Bucket, error) {
+						if name != "rucket_11" {
+							return nil, errors.New("not found")
+						}
 						return &influxdb.Bucket{
 							ID:              influxdb.ID(1),
 							OrgID:           orgID,
@@ -72,7 +75,7 @@ func TestService(t *testing.T) {
 					_, diff, err := svc.DryRun(context.TODO(), influxdb.ID(100), 0, pkg)
 					require.NoError(t, err)
 
-					require.Len(t, diff.Buckets, 1)
+					require.Len(t, diff.Buckets, 2)
 
 					expected := DiffBucket{
 						ID:   SafeID(1),
@@ -86,7 +89,7 @@ func TestService(t *testing.T) {
 							RetentionRules: retentionRules{newRetentionRule(time.Hour)},
 						},
 					}
-					assert.Equal(t, expected, diff.Buckets[0])
+					assert.Contains(t, diff.Buckets, expected)
 				})
 			})
 
@@ -101,7 +104,7 @@ func TestService(t *testing.T) {
 					_, diff, err := svc.DryRun(context.TODO(), influxdb.ID(100), 0, pkg)
 					require.NoError(t, err)
 
-					require.Len(t, diff.Buckets, 1)
+					require.Len(t, diff.Buckets, 2)
 
 					expected := DiffBucket{
 						Name: "rucket_11",
@@ -110,7 +113,7 @@ func TestService(t *testing.T) {
 							RetentionRules: retentionRules{newRetentionRule(time.Hour)},
 						},
 					}
-					assert.Equal(t, expected, diff.Buckets[0])
+					assert.Contains(t, diff.Buckets, expected)
 				})
 			})
 		})
@@ -175,7 +178,7 @@ func TestService(t *testing.T) {
 					_, diff, err := svc.DryRun(context.TODO(), influxdb.ID(100), 0, pkg)
 					require.NoError(t, err)
 
-					require.Len(t, diff.Labels, 2)
+					require.Len(t, diff.Labels, 3)
 
 					expected := DiffLabel{
 						ID:   SafeID(1),
@@ -189,12 +192,12 @@ func TestService(t *testing.T) {
 							Description: "label 1 description",
 						},
 					}
-					assert.Equal(t, expected, diff.Labels[0])
+					assert.Contains(t, diff.Labels, expected)
 
 					expected.Name = "label_2"
 					expected.New.Color = "#000000"
 					expected.New.Description = "label 2 description"
-					assert.Equal(t, expected, diff.Labels[1])
+					assert.Contains(t, diff.Labels, expected)
 				})
 			})
 
@@ -209,7 +212,7 @@ func TestService(t *testing.T) {
 					_, diff, err := svc.DryRun(context.TODO(), influxdb.ID(100), 0, pkg)
 					require.NoError(t, err)
 
-					require.Len(t, diff.Labels, 2)
+					require.Len(t, diff.Labels, 3)
 
 					expected := DiffLabel{
 						Name: "label_1",
@@ -218,12 +221,12 @@ func TestService(t *testing.T) {
 							Description: "label 1 description",
 						},
 					}
-					assert.Equal(t, expected, diff.Labels[0])
+					assert.Contains(t, diff.Labels, expected)
 
 					expected.Name = "label_2"
 					expected.New.Color = "#000000"
 					expected.New.Description = "label 2 description"
-					assert.Equal(t, expected, diff.Labels[1])
+					assert.Contains(t, diff.Labels, expected)
 				})
 			})
 		})
@@ -442,30 +445,38 @@ func TestService(t *testing.T) {
 					sum, err := svc.Apply(context.TODO(), orgID, 0, pkg)
 					require.NoError(t, err)
 
-					require.Len(t, sum.Buckets, 1)
-					buck1 := sum.Buckets[0]
-					assert.Equal(t, SafeID(time.Hour), buck1.ID)
-					assert.Equal(t, SafeID(orgID), buck1.OrgID)
-					assert.Equal(t, "rucket_11", buck1.Name)
-					assert.Equal(t, time.Hour, buck1.RetentionPeriod)
-					assert.Equal(t, "bucket 1 description", buck1.Description)
+					require.Len(t, sum.Buckets, 2)
+
+					expected := SummaryBucket{
+						ID:                SafeID(time.Hour),
+						OrgID:             SafeID(orgID),
+						Name:              "rucket_11",
+						Description:       "bucket 1 description",
+						RetentionPeriod:   time.Hour,
+						LabelAssociations: []SummaryLabel{},
+					}
+					assert.Contains(t, sum.Buckets, expected)
 				})
 			})
 
 			t.Run("will not apply bucket if no changes to be applied", func(t *testing.T) {
-				testfileRunner(t, "testdata/bucket", func(t *testing.T, pkg *Pkg) {
+				testfileRunner(t, "testdata/bucket.yml", func(t *testing.T, pkg *Pkg) {
 					orgID := influxdb.ID(9000)
 
 					pkg.isVerified = true
-					pkgBkt := pkg.mBuckets["rucket_11"]
-					pkgBkt.existing = &influxdb.Bucket{
-						// makes all pkg changes same as they are on thes existing bucket
-						ID:              influxdb.ID(3),
-						OrgID:           orgID,
-						Name:            pkgBkt.Name(),
-						Description:     pkgBkt.Description,
-						RetentionPeriod: pkgBkt.RetentionRules.RP(),
+					stubExisting := func(name string, id influxdb.ID) {
+						pkgBkt := pkg.mBuckets[name]
+						pkgBkt.existing = &influxdb.Bucket{
+							// makes all pkg changes same as they are on thes existing bucket
+							ID:              id,
+							OrgID:           orgID,
+							Name:            pkgBkt.Name(),
+							Description:     pkgBkt.Description,
+							RetentionPeriod: pkgBkt.RetentionRules.RP(),
+						}
 					}
+					stubExisting("rucket_11", 3)
+					stubExisting("rucket_222", 4)
 
 					fakeBktSVC := mock.NewBucketService()
 					fakeBktSVC.UpdateBucketFn = func(_ context.Context, id influxdb.ID, upd influxdb.BucketUpdate) (*influxdb.Bucket, error) {
@@ -477,13 +488,17 @@ func TestService(t *testing.T) {
 					sum, err := svc.Apply(context.TODO(), orgID, 0, pkg)
 					require.NoError(t, err)
 
-					require.Len(t, sum.Buckets, 1)
-					buck1 := sum.Buckets[0]
-					assert.Equal(t, SafeID(3), buck1.ID)
-					assert.Equal(t, SafeID(orgID), buck1.OrgID)
-					assert.Equal(t, "rucket_11", buck1.Name)
-					assert.Equal(t, time.Hour, buck1.RetentionPeriod)
-					assert.Equal(t, "bucket 1 description", buck1.Description)
+					require.Len(t, sum.Buckets, 2)
+
+					expected := SummaryBucket{
+						ID:                SafeID(3),
+						OrgID:             SafeID(orgID),
+						Name:              "rucket_11",
+						Description:       "bucket 1 description",
+						RetentionPeriod:   time.Hour,
+						LabelAssociations: []SummaryLabel{},
+					}
+					assert.Contains(t, sum.Buckets, expected)
 					assert.Zero(t, fakeBktSVC.CreateBucketCalls.Count())
 					assert.Zero(t, fakeBktSVC.UpdateBucketCalls.Count())
 				})
@@ -585,12 +600,12 @@ func TestService(t *testing.T) {
 
 		t.Run("labels", func(t *testing.T) {
 			t.Run("successfully creates pkg of labels", func(t *testing.T) {
-				testfileRunner(t, "testdata/label", func(t *testing.T, pkg *Pkg) {
+				testfileRunner(t, "testdata/label.json", func(t *testing.T, pkg *Pkg) {
 					fakeLabelSVC := mock.NewLabelService()
 					fakeLabelSVC.CreateLabelFn = func(_ context.Context, l *influxdb.Label) error {
 						i, err := strconv.Atoi(l.Name[len(l.Name)-1:])
 						if err != nil {
-							return err
+							return nil
 						}
 						l.ID = influxdb.ID(i)
 						return nil
@@ -603,20 +618,33 @@ func TestService(t *testing.T) {
 					sum, err := svc.Apply(context.TODO(), orgID, 0, pkg)
 					require.NoError(t, err)
 
-					require.Len(t, sum.Labels, 2)
-					label1 := sum.Labels[0]
-					assert.Equal(t, SafeID(1), label1.ID)
-					assert.Equal(t, SafeID(orgID), label1.OrgID)
-					assert.Equal(t, "label_1", label1.Name)
-					assert.Equal(t, "#FFFFFF", label1.Properties.Color)
-					assert.Equal(t, "label 1 description", label1.Properties.Description)
+					require.Len(t, sum.Labels, 3)
 
-					label2 := sum.Labels[1]
-					assert.Equal(t, SafeID(2), label2.ID)
-					assert.Equal(t, SafeID(orgID), label2.OrgID)
-					assert.Equal(t, "label_2", label2.Name)
-					assert.Equal(t, "#000000", label2.Properties.Color)
-					assert.Equal(t, "label 2 description", label2.Properties.Description)
+					assert.Contains(t, sum.Labels, SummaryLabel{
+						ID:    1,
+						OrgID: SafeID(orgID),
+						Name:  "label_1",
+						Properties: struct {
+							Color       string `json:"color"`
+							Description string `json:"description"`
+						}{
+							Color:       "#FFFFFF",
+							Description: "label 1 description",
+						},
+					})
+
+					assert.Contains(t, sum.Labels, SummaryLabel{
+						ID:    2,
+						OrgID: SafeID(orgID),
+						Name:  "label_2",
+						Properties: struct {
+							Color       string `json:"color"`
+							Description string `json:"description"`
+						}{
+							Color:       "#000000",
+							Description: "label 2 description",
+						},
+					})
 				})
 			})
 
@@ -650,23 +678,26 @@ func TestService(t *testing.T) {
 					orgID := influxdb.ID(9000)
 
 					pkg.isVerified = true
-					pkgLabel := pkg.mLabels["label_1"]
-					pkgLabel.existing = &influxdb.Label{
-						// makes all pkg changes same as they are on the existing
-						ID:    influxdb.ID(1),
-						OrgID: orgID,
-						Name:  pkgLabel.Name(),
-						Properties: map[string]string{
-							"color":       pkgLabel.Color,
-							"description": pkgLabel.Description,
-						},
+					stubExisting := func(name string, id influxdb.ID) {
+						pkgLabel := pkg.mLabels[name]
+						pkgLabel.existing = &influxdb.Label{
+							// makes all pkg changes same as they are on the existing
+							ID:    id,
+							OrgID: orgID,
+							Name:  pkgLabel.Name(),
+							Properties: map[string]string{
+								"color":       pkgLabel.Color,
+								"description": pkgLabel.Description,
+							},
+						}
 					}
+					stubExisting("label_1", 1)
+					stubExisting("label_3", 3)
 
 					fakeLabelSVC := mock.NewLabelService()
 					fakeLabelSVC.CreateLabelFn = func(_ context.Context, l *influxdb.Label) error {
 						if l.Name == "label_2" {
-							l.ID = influxdb.ID(2)
-							return nil
+							l.ID = 2
 						}
 						return nil
 					}
@@ -682,20 +713,33 @@ func TestService(t *testing.T) {
 					sum, err := svc.Apply(context.TODO(), orgID, 0, pkg)
 					require.NoError(t, err)
 
-					require.Len(t, sum.Labels, 2)
-					label1 := sum.Labels[0]
-					assert.Equal(t, SafeID(1), label1.ID)
-					assert.Equal(t, SafeID(orgID), label1.OrgID)
-					assert.Equal(t, "label_1", label1.Name)
-					assert.Equal(t, "#FFFFFF", label1.Properties.Color)
-					assert.Equal(t, "label 1 description", label1.Properties.Description)
+					require.Len(t, sum.Labels, 3)
 
-					label2 := sum.Labels[1]
-					assert.Equal(t, SafeID(2), label2.ID)
-					assert.Equal(t, SafeID(orgID), label2.OrgID)
-					assert.Equal(t, "label_2", label2.Name)
-					assert.Equal(t, "#000000", label2.Properties.Color)
-					assert.Equal(t, "label 2 description", label2.Properties.Description)
+					assert.Contains(t, sum.Labels, SummaryLabel{
+						ID:    1,
+						OrgID: SafeID(orgID),
+						Name:  "label_1",
+						Properties: struct {
+							Color       string `json:"color"`
+							Description string `json:"description"`
+						}{
+							Color:       "#FFFFFF",
+							Description: "label 1 description",
+						},
+					})
+
+					assert.Contains(t, sum.Labels, SummaryLabel{
+						ID:    2,
+						OrgID: SafeID(orgID),
+						Name:  "label_2",
+						Properties: struct {
+							Color       string `json:"color"`
+							Description string `json:"description"`
+						}{
+							Color:       "#000000",
+							Description: "label 2 description",
+						},
+					})
 
 					assert.Equal(t, 1, fakeLabelSVC.CreateLabelCalls.Count()) // only called for second label
 				})
@@ -1577,7 +1621,7 @@ func TestService(t *testing.T) {
 					EditMode: "advanced",
 				}
 				// TODO: remove this when issue that forced the builder tag to be here to render in UI.
-				q.BuilderConfig.Tags = append(q.BuilderConfig.Tags, influxdb.NewBuilderTag("_measurement", ""))
+				q.BuilderConfig.Tags = append(q.BuilderConfig.Tags, influxdb.NewBuilderTag("_measurement", "filter", ""))
 				return q
 			}
 
@@ -1819,6 +1863,42 @@ func TestService(t *testing.T) {
 							Properties: influxdb.MarkdownViewProperties{
 								Type: influxdb.ViewPropertyTypeMarkdown,
 								Note: "a note",
+							},
+						},
+					},
+					{
+						name:    "table",
+						newName: "new name",
+						expectedView: influxdb.View{
+							ViewContents: influxdb.ViewContents{
+								Name: "view name",
+							},
+							Properties: influxdb.TableViewProperties{
+								Type:              influxdb.ViewPropertyTypeTable,
+								Note:              "a note",
+								ShowNoteWhenEmpty: true,
+								Queries:           []influxdb.DashboardQuery{newQuery()},
+								ViewColors:        []influxdb.ViewColor{{Type: "scale", Hex: "#8F8AF4", Value: 0}, {Type: "scale", Hex: "#8F8AF4", Value: 0}, {Type: "scale", Hex: "#8F8AF4", Value: 0}},
+								TableOptions: influxdb.TableOptions{
+									VerticalTimeAxis: true,
+									SortBy: influxdb.RenamableField{
+										InternalName: "_time",
+									},
+									Wrapping:       "truncate",
+									FixFirstColumn: true,
+								},
+								FieldOptions: []influxdb.RenamableField{
+									{
+										InternalName: "_time",
+										DisplayName:  "time (ms)",
+										Visible:      true,
+									},
+								},
+								TimeFormat: "YYYY:MM:DD",
+								DecimalPlaces: influxdb.DecimalPlaces{
+									IsEnforced: true,
+									Digits:     1,
+								},
 							},
 						},
 					},
@@ -2634,21 +2714,22 @@ func TestService(t *testing.T) {
 				}, nil
 			}
 
+			expectedRule := &rule.HTTP{
+				Base: rule.Base{
+					ID:          12,
+					Name:        "rule_0",
+					EndpointID:  2,
+					Every:       mustDuration(t, time.Minute),
+					StatusRules: []notification.StatusRule{{CurrentLevel: notification.Critical}},
+				},
+			}
 			ruleSVC := mock.NewNotificationRuleStore()
 			ruleSVC.FindNotificationRulesF = func(ctx context.Context, f influxdb.NotificationRuleFilter, _ ...influxdb.FindOptions) ([]influxdb.NotificationRule, int, error) {
-				out := []influxdb.NotificationRule{&rule.HTTP{Base: rule.Base{ID: 91}}}
+				out := []influxdb.NotificationRule{expectedRule}
 				return out, len(out), nil
 			}
 			ruleSVC.FindNotificationRuleByIDF = func(ctx context.Context, id influxdb.ID) (influxdb.NotificationRule, error) {
-				return &rule.HTTP{
-					Base: rule.Base{
-						ID:          id,
-						Name:        "rule_0",
-						EndpointID:  2,
-						Every:       mustDuration(t, time.Minute),
-						StatusRules: []notification.StatusRule{{CurrentLevel: notification.Critical}},
-					},
-				}, nil
+				return expectedRule, nil
 			}
 
 			labelSVC := mock.NewLabelService()
@@ -2668,9 +2749,10 @@ func TestService(t *testing.T) {
 			taskSVC := mock.NewTaskService()
 			taskSVC.FindTasksFn = func(ctx context.Context, f influxdb.TaskFilter) ([]*influxdb.Task, int, error) {
 				return []*influxdb.Task{
-					{ID: 31},
-					{ID: expectedCheck.TaskID},              // this one should be ignored in the return
-					{ID: 99, Type: influxdb.TaskSystemType}, // this one should be skipped since it is a system task
+					{ID: 31, Type: influxdb.TaskSystemType},
+					{ID: expectedCheck.TaskID, Type: influxdb.TaskSystemType}, // this one should be ignored in the return
+					{ID: expectedRule.TaskID, Type: influxdb.TaskSystemType},  // this one should be ignored in the return as well
+					{ID: 99}, // this one should be skipped since it is not a system task
 				}, 3, nil
 			}
 			taskSVC.FindTaskByIDFn = func(ctx context.Context, id influxdb.ID) (*influxdb.Task, error) {
@@ -2712,7 +2794,12 @@ func TestService(t *testing.T) {
 				WithVariableSVC(varSVC),
 			)
 
-			pkg, err := svc.CreatePkg(context.TODO(), CreateWithAllOrgResources(orgID))
+			pkg, err := svc.CreatePkg(
+				context.TODO(),
+				CreateWithAllOrgResources(CreateByOrgIDOpt{
+					OrgID: orgID,
+				}),
+			)
 			require.NoError(t, err)
 
 			summary := pkg.Summary()
@@ -2722,7 +2809,7 @@ func TestService(t *testing.T) {
 
 			checks := summary.Checks
 			require.Len(t, checks, 1)
-			assert.Equal(t, "check_1", checks[0].Check.GetName())
+			assert.Equal(t, expectedCheck.Name, checks[0].Check.GetName())
 
 			dashs := summary.Dashboards
 			require.Len(t, dashs, 1)
@@ -2738,8 +2825,8 @@ func TestService(t *testing.T) {
 
 			rules := summary.NotificationRules
 			require.Len(t, rules, 1)
-			assert.Equal(t, "rule_0", rules[0].Name)
-			assert.Equal(t, "http", rules[0].EndpointName)
+			assert.Equal(t, expectedRule.Name, rules[0].Name)
+			assert.Equal(t, expectedRule.Type(), rules[0].EndpointName)
 
 			require.Len(t, summary.Tasks, 1)
 			task1 := summary.Tasks[0]

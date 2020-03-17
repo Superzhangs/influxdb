@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/influxdata/influxdb"
 	"github.com/influxdata/influxdb/bolt"
+	"github.com/influxdata/influxdb/cmd/influx/config"
 	"github.com/influxdata/influxdb/cmd/influx/internal"
 	"github.com/influxdata/influxdb/http"
 	"github.com/influxdata/influxdb/internal/fs"
@@ -41,7 +43,7 @@ func newHTTPClient() (*httpc.Client, error) {
 		return httpClient, nil
 	}
 
-	c, err := http.NewHTTPClient(flags.host, flags.token, flags.skipVerify)
+	c, err := http.NewHTTPClient(flags.Host, flags.Token, flags.skipVerify)
 	if err != nil {
 		return nil, err
 	}
@@ -51,15 +53,19 @@ func newHTTPClient() (*httpc.Client, error) {
 }
 
 type (
-	runEWrapFn func(fn func(*cobra.Command, []string) error) func(*cobra.Command, []string) error
+	cobraRunEFn func(cmd *cobra.Command, args []string) error
+
+	cobraRunEMiddleware func(fn cobraRunEFn) cobraRunEFn
 
 	genericCLIOptFn func(*genericCLIOpts)
 )
 
 type genericCLIOpts struct {
-	in         io.Reader
-	w          io.Writer
-	runEWrapFn runEWrapFn
+	in   io.Reader
+	w    io.Writer
+	errW io.Writer
+
+	runEWrapFn cobraRunEMiddleware
 }
 
 func (o genericCLIOpts) newCmd(use string, runE func(*cobra.Command, []string) error) *cobra.Command {
@@ -72,6 +78,8 @@ func (o genericCLIOpts) newCmd(use string, runE func(*cobra.Command, []string) e
 		cmd.RunE = o.runEWrapFn(runE)
 	}
 	cmd.SetOut(o.w)
+	cmd.SetIn(o.in)
+	cmd.SetErr(o.errW)
 	return cmd
 }
 
@@ -91,64 +99,73 @@ func out(w io.Writer) genericCLIOptFn {
 	}
 }
 
-func runEWrap(fn runEWrapFn) genericCLIOptFn {
-	return func(opts *genericCLIOpts) {
-		opts.runEWrapFn = fn
+func err(w io.Writer) genericCLIOptFn {
+	return func(o *genericCLIOpts) {
+		o.errW = w
 	}
 }
 
-var flags struct {
-	token      string
-	host       string
+func runEMiddlware(mw cobraRunEMiddleware) genericCLIOptFn {
+	return func(o *genericCLIOpts) {
+		o.runEWrapFn = mw
+	}
+}
+
+type globalFlags struct {
+	config.Config
 	local      bool
 	skipVerify bool
 }
 
-func influxCmd(opts ...genericCLIOptFn) *cobra.Command {
+var flags globalFlags
+
+type cmdInfluxBuilder struct {
+	genericCLIOpts
+
+	once sync.Once
+}
+
+func newInfluxCmdBuilder(optFns ...genericCLIOptFn) *cmdInfluxBuilder {
+	builder := new(cmdInfluxBuilder)
+
 	opt := genericCLIOpts{
-		in: os.Stdin,
-		w:  os.Stdout,
+		in:         os.Stdin,
+		w:          os.Stdout,
+		errW:       os.Stderr,
+		runEWrapFn: checkSetupRunEMiddleware(&flags),
 	}
-	for _, o := range opts {
-		o(&opt)
+	for _, optFn := range optFns {
+		optFn(&opt)
 	}
 
-	cmd := opt.newCmd("influx", nil)
+	builder.genericCLIOpts = opt
+	return builder
+}
+
+func (b *cmdInfluxBuilder) cmd(childCmdFns ...func(f *globalFlags, opt genericCLIOpts) *cobra.Command) *cobra.Command {
+	b.once.Do(func() {
+		// enforce that viper options only ever get set once
+		setViperOptions()
+	})
+
+	cmd := b.newCmd("influx", nil)
 	cmd.Short = "Influx Client"
 	cmd.SilenceUsage = true
 
-	setViperOptions()
-
-	runEWrapper := runEWrap(wrapCheckSetup)
-
-	cmd.AddCommand(
-		cmdAuth(),
-		cmdBackup(),
-		cmdBucket(runEWrapper),
-		cmdDelete(),
-		cmdOrganization(runEWrapper),
-		cmdPing(),
-		cmdPkg(runEWrapper),
-		cmdQuery(),
-		cmdTranspile(),
-		cmdREPL(),
-		cmdSecret(runEWrapper),
-		cmdSetup(),
-		cmdTask(),
-		cmdUser(runEWrapper),
-		cmdWrite(),
-	)
+	for _, childCmd := range childCmdFns {
+		cmd.AddCommand(childCmd(&flags, b.genericCLIOpts))
+	}
 
 	fOpts := flagOpts{
 		{
-			DestP:      &flags.token,
+			DestP:      &flags.Token,
 			Flag:       "token",
 			Short:      't',
 			Desc:       "API token to be used throughout client calls",
 			Persistent: true,
 		},
 		{
-			DestP:      &flags.host,
+			DestP:      &flags.Host,
 			Flag:       "host",
 			Default:    "http://localhost:9999",
 			Desc:       "HTTP address of Influx",
@@ -157,11 +174,14 @@ func influxCmd(opts ...genericCLIOptFn) *cobra.Command {
 	}
 	fOpts.mustRegister(cmd)
 
-	if flags.token == "" {
+	if flags.Token == "" {
+		// migration credential token
+		migrateOldCredential()
+
 		// this is after the flagOpts register b/c we don't want to show the default value
-		// in the usage display. This will add it as the token value, then if a token flag
+		// in the usage display. This will add it as the config, then if a token flag
 		// is provided too, the flag will take precedence.
-		flags.token = getTokenFromDefaultPath()
+		flags.Config = getConfigFromDefaultPath()
 	}
 
 	cmd.PersistentFlags().BoolVar(&flags.local, "local", false, "Run commands locally against the filesystem")
@@ -172,7 +192,32 @@ func influxCmd(opts ...genericCLIOptFn) *cobra.Command {
 		c.Flags().BoolP("help", "h", false, fmt.Sprintf("Help for the %s command ", c.Name()))
 	})
 
+	// completion command goes last, after the walk, so that all
+	// commands have every flag listed in the bash|zsh completions.
+	cmd.AddCommand(completionCmd(cmd))
 	return cmd
+}
+
+func influxCmd(opts ...genericCLIOptFn) *cobra.Command {
+	builder := newInfluxCmdBuilder(opts...)
+	return builder.cmd(
+		cmdAuth,
+		cmdBackup,
+		cmdBucket,
+		cmdDelete,
+		cmdOrganization,
+		cmdPing,
+		cmdPkg,
+		cmdConfig,
+		cmdQuery,
+		cmdTranspile,
+		cmdREPL,
+		cmdSecret,
+		cmdSetup,
+		cmdTask,
+		cmdUser,
+		cmdWrite,
+	)
 }
 
 func fetchSubCommand(parent *cobra.Command, args []string) *cobra.Command {
@@ -203,37 +248,62 @@ func seeHelp(c *cobra.Command, args []string) {
 	c.Printf("See '%s -h' for help\n", c.CommandPath())
 }
 
-func defaultTokenPath() (string, string, error) {
+func defaultConfigPath() (string, string, error) {
 	dir, err := fs.InfluxDir()
 	if err != nil {
 		return "", "", err
 	}
-	return filepath.Join(dir, http.DefaultTokenFile), dir, nil
+	return filepath.Join(dir, http.DefaultConfigsFile), dir, nil
 }
 
-func getTokenFromDefaultPath() string {
-	path, _, err := defaultTokenPath()
+func getConfigFromDefaultPath() config.Config {
+	path, _, err := defaultConfigPath()
 	if err != nil {
-		return ""
+		return config.DefaultConfig
 	}
-	b, err := ioutil.ReadFile(path)
+	r, err := os.Open(path)
 	if err != nil {
-		return ""
+		return config.DefaultConfig
 	}
-	return strings.TrimSpace(string(b))
+	activated, _ := config.ParseActiveConfig(r)
+	return activated
 }
 
-func writeTokenToPath(tok, path, dir string) error {
-	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		return err
+func migrateOldCredential() {
+	dir, err := fs.InfluxDir()
+	if err != nil {
+		return // no need for migration
 	}
-	return ioutil.WriteFile(path, []byte(tok), 0600)
+	tokB, err := ioutil.ReadFile(filepath.Join(dir, http.DefaultTokenFile))
+	if err != nil {
+		return // no need for migration
+	}
+	err = writeConfigToPath(strings.TrimSpace(string(tokB)), "", filepath.Join(dir, http.DefaultConfigsFile), dir)
+	if err != nil {
+		return
+	}
+	// ignore the remove err
+	_ = os.Remove(filepath.Join(dir, http.DefaultTokenFile))
 }
 
-func checkSetup(host string) error {
+func writeConfigToPath(tok, org, path, dir string) error {
+	p := &config.DefaultConfig
+	p.Token = tok
+	p.Org = org
+	pp := map[string]config.Config{
+		"default": *p,
+	}
+
+	return config.LocalConfigsSVC{
+		Path: path,
+		Dir:  dir,
+	}.WriteConfigs(pp)
+}
+
+func checkSetup(host string, skipVerify bool) error {
 	s := &http.SetupService{
-		Addr:               flags.host,
-		InsecureSkipVerify: flags.skipVerify,
+		Addr:               host,
+		InsecureSkipVerify: skipVerify,
 	}
 
 	isOnboarding, err := s.IsOnboarding(context.Background())
@@ -248,29 +318,20 @@ func checkSetup(host string) error {
 	return nil
 }
 
-func wrapCheckSetup(fn func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
-	return wrapErrorFmt(func(cmd *cobra.Command, args []string) error {
-		err := fn(cmd, args)
-		if err == nil {
-			return nil
+func checkSetupRunEMiddleware(f *globalFlags) cobraRunEMiddleware {
+	return func(fn cobraRunEFn) cobraRunEFn {
+		return func(cmd *cobra.Command, args []string) error {
+			err := fn(cmd, args)
+			if err == nil {
+				return nil
+			}
+
+			if setupErr := checkSetup(f.Host, f.skipVerify); setupErr != nil && influxdb.EUnauthorized != influxdb.ErrorCode(setupErr) {
+				return internal.ErrorFmt(setupErr)
+			}
+
+			return internal.ErrorFmt(err)
 		}
-
-		if setupErr := checkSetup(flags.host); setupErr != nil && influxdb.EUnauthorized != influxdb.ErrorCode(setupErr) {
-			return setupErr
-		}
-
-		return err
-	})
-}
-
-func wrapErrorFmt(fn func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
-	return func(cmd *cobra.Command, args []string) error {
-		err := fn(cmd, args)
-		if err == nil {
-			return nil
-		}
-
-		return internal.ErrorFmt(err)
 	}
 }
 
@@ -338,7 +399,11 @@ func (o *organization) getID(orgSVC influxdb.OrganizationService) (influxdb.ID, 
 	return 0, fmt.Errorf("failed to locate an organization id")
 }
 
-func (o *organization) validOrgFlags() error {
+func (o *organization) validOrgFlags(f *globalFlags) error {
+	if o.id == "" && o.name == "" && f != nil {
+		o.name = f.Org
+	}
+
 	if o.id == "" && o.name == "" {
 		return fmt.Errorf("must specify org-id, or org name")
 	} else if o.id != "" && o.name != "" {

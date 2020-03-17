@@ -1,13 +1,12 @@
 // Libraries
 import React, {FunctionComponent} from 'react'
 import {connect} from 'react-redux'
-import {get} from 'lodash'
 
 // Components
 import {
   Form,
-  SelectDropdown,
-  IconFont,
+  DropdownMenuTheme,
+  Dropdown,
   ComponentStatus,
 } from '@influxdata/clockface'
 
@@ -18,18 +17,17 @@ import {
 } from 'src/timeMachine/actions/queries'
 
 // Utils
-import {
-  getTimeMachineValues,
-  getTimeMachineValuesStatus,
-} from 'src/variables/selectors'
+import {getTimeMachineValuesStatus} from 'src/variables/selectors'
+import {getVariableValuesForDropdown} from 'src/dashboards/selectors'
 import {toComponentStatus} from 'src/shared/utils/toComponentStatus'
 
 // Types
-import {RemoteDataState, VariableValues} from 'src/types'
+import {RemoteDataState, Variable} from 'src/types'
 import {AppState} from 'src/types'
 
 interface StateProps {
-  values?: VariableValues
+  values: {name: string; value: string}[]
+  selectedValue: string
   valuesStatus: RemoteDataState
 }
 
@@ -39,6 +37,7 @@ interface DispatchProps {
 }
 
 interface OwnProps {
+  variable?: Variable
   variableID: string
 }
 
@@ -47,11 +46,12 @@ type Props = StateProps & DispatchProps & OwnProps
 const VariableTooltipContents: FunctionComponent<Props> = ({
   variableID,
   values,
+  selectedValue,
   valuesStatus,
   onAddVariableToTimeMachine,
   onSelectVariableValue,
 }) => {
-  const dropdownItems: string[] = get(values, 'values') || []
+  const dropdownItems = values || []
 
   const handleMouseEnter = () => {
     if (values || valuesStatus === RemoteDataState.Loading) {
@@ -61,34 +61,55 @@ const VariableTooltipContents: FunctionComponent<Props> = ({
     onAddVariableToTimeMachine(variableID)
   }
 
-  let selectedOption = 'None Selected'
-  let icon
   let status = toComponentStatus(valuesStatus)
 
-  if (!values) {
-    selectedOption = 'Failed to Load'
-    icon = IconFont.AlertTriangle
+  if (selectedValue === 'Failed to Load') {
     status = ComponentStatus.Disabled
-  } else if (values.error) {
-    selectedOption = 'Failed to Load'
-    icon = IconFont.AlertTriangle
-    status = ComponentStatus.Disabled
-  } else if (!values.values.length) {
-    selectedOption = 'No Results'
-  } else {
-    selectedOption = get(values, 'selectedValue', 'None Selected')
+  }
+
+  const handleSelect = (selectedValue: string) => {
+    onSelectVariableValue(variableID, selectedValue)
   }
 
   return (
     <div onMouseEnter={handleMouseEnter}>
       <Form.Element label="Value">
-        <SelectDropdown
-          buttonIcon={icon}
-          options={dropdownItems}
-          selectedOption={selectedOption}
-          buttonStatus={status}
+        <Dropdown
           style={{width: '200px'}}
-          onSelect={value => onSelectVariableValue(variableID, value)}
+          testID="variable--tooltip-dropdown"
+          button={(active, onClick) => (
+            <Dropdown.Button
+              active={active}
+              onClick={onClick}
+              testID="variable-dropdown--button"
+              status={status}
+            >
+              {selectedValue || 'No Values'}
+            </Dropdown.Button>
+          )}
+          menu={onCollapse => (
+            <Dropdown.Menu
+              onCollapse={onCollapse}
+              theme={DropdownMenuTheme.Amethyst}
+            >
+              {dropdownItems.map(({name}) => (
+                /*
+                Use key as value since they are unique otherwise
+                multiple selection appear in the dropdown
+              */
+                <Dropdown.Item
+                  key={name}
+                  id={name}
+                  value={name}
+                  onClick={handleSelect}
+                  selected={name === selectedValue}
+                  testID="variable-dropdown--item"
+                >
+                  {name}
+                </Dropdown.Item>
+              ))}
+            </Dropdown.Menu>
+          )}
         />
       </Form.Element>
     </div>
@@ -97,9 +118,14 @@ const VariableTooltipContents: FunctionComponent<Props> = ({
 
 const mstp = (state: AppState, ownProps: OwnProps) => {
   const valuesStatus = getTimeMachineValuesStatus(state)
-  const values = getTimeMachineValues(state, ownProps.variableID)
-
-  return {values, valuesStatus}
+  const {variableID} = ownProps
+  const activeTimeMachineID = state.timeMachines.activeTimeMachineID
+  const {list, selectedValue} = getVariableValuesForDropdown(
+    state,
+    variableID,
+    activeTimeMachineID
+  )
+  return {values: list, selectedValue, valuesStatus}
 }
 
 const mdtp = {

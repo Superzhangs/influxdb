@@ -169,6 +169,16 @@ export const dashboardDeleteFailed = (
   message: `Failed to delete Dashboard ${name}: ${errorMessage}.`,
 })
 
+export const dashboardCopySuccess = () => ({
+  ...defaultSuccessNotification,
+  message: 'Copied dashboard to the clipboard!',
+})
+
+export const dashboardCopyFailed = () => ({
+  ...defaultErrorNotification,
+  message: 'Failed to copy dashboard.',
+})
+
 export const cellAdded = (
   cellName?: string,
   dashboardName?: string
@@ -712,6 +722,12 @@ export const authorizationCreateSuccess = (): Notification => ({
   message: 'Token was created successfully',
 })
 
+export const passwordResetSuccessfully = (message: string): Notification => ({
+  ...defaultSuccessNotification,
+  message: `${message}
+  If you haven't received an email, please ensure that the email you provided is correct.`,
+})
+
 export const authorizationCreateFailed = (): Notification => ({
   ...defaultErrorNotification,
   message: 'Failed to create tokens',
@@ -735,6 +751,16 @@ export const authorizationDeleteSuccess = (): Notification => ({
 export const authorizationDeleteFailed = (desc: string): Notification => ({
   ...defaultErrorNotification,
   message: `Failed to delete token: "${desc}"`,
+})
+
+export const authorizationCopySuccess = (): Notification => ({
+  ...defaultSuccessNotification,
+  message: 'Token has been copied to clipboard',
+})
+
+export const authorizationCopyFailed = (): Notification => ({
+  ...defaultErrorNotification,
+  message: 'Failed to copy token to clipboard',
 })
 
 export const telegrafDeleteSuccess = (telegrafName: string): Notification => ({

@@ -20,6 +20,7 @@ import GetOrganizations from 'src/shared/containers/GetOrganizations'
 import Setup from 'src/Setup'
 import Signin from 'src/Signin'
 import SigninPage from 'src/onboarding/containers/SigninPage'
+import {LoginPage} from 'src/onboarding/containers/LoginPage'
 import Logout from 'src/Logout'
 import TaskPage from 'src/tasks/containers/TaskPage'
 import TasksPage from 'src/tasks/containers/TasksPage'
@@ -51,6 +52,7 @@ import ClientCSharpOverlay from 'src/clientLibraries/components/ClientCSharpOver
 import ClientGoOverlay from 'src/clientLibraries/components/ClientGoOverlay'
 import ClientJavaOverlay from 'src/clientLibraries/components/ClientJavaOverlay'
 import ClientJSOverlay from 'src/clientLibraries/components/ClientJSOverlay'
+import ClientPHPOverlay from 'src/clientLibraries/components/ClientPHPOverlay'
 import ClientPythonOverlay from 'src/clientLibraries/components/ClientPythonOverlay'
 import ClientRubyOverlay from 'src/clientLibraries/components/ClientRubyOverlay'
 import TemplateImportOverlay from 'src/templates/components/TemplateImportOverlay'
@@ -191,6 +193,7 @@ class Root extends PureComponent {
                   component={OnboardingWizardPage}
                 />
                 <Route component={UnauthenticatedApp}>
+                  <Route path="/login" component={LoginPage} />
                   <Route path="/signin" component={SigninPage} />
                   <Route path="/logout" component={Logout} />
                 </Route>
@@ -346,6 +349,7 @@ class Root extends PureComponent {
                                 path="javascript-node"
                                 component={ClientJSOverlay}
                               />
+                              <Route path="php" component={ClientPHPOverlay} />
                               <Route
                                 path="python"
                                 component={ClientPythonOverlay}

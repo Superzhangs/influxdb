@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -585,6 +586,7 @@ const (
 	chartKindScatter            chartKind = "scatter"
 	chartKindSingleStat         chartKind = "single_stat"
 	chartKindSingleStatPlusLine chartKind = "single_stat_plus_line"
+	chartKindTable              chartKind = "table"
 	chartKindXY                 chartKind = "xy"
 )
 
@@ -592,7 +594,7 @@ func (c chartKind) ok() bool {
 	switch c {
 	case chartKindGauge, chartKindHeatMap, chartKindHistogram,
 		chartKindMarkdown, chartKindScatter, chartKindSingleStat,
-		chartKindSingleStatPlusLine, chartKindXY:
+		chartKindSingleStatPlusLine, chartKindTable, chartKindXY:
 		return true
 	default:
 		return false
@@ -771,12 +773,14 @@ const (
 	fieldLevel        = "level"
 	fieldMin          = "min"
 	fieldMax          = "max"
+	fieldMetadata     = "metadata"
 	fieldName         = "name"
 	fieldOffset       = "offset"
 	fieldOperator     = "operator"
 	fieldPrefix       = "prefix"
 	fieldQuery        = "query"
 	fieldSuffix       = "suffix"
+	fieldSpec         = "spec"
 	fieldStatus       = "status"
 	fieldType         = "type"
 	fieldValue        = "value"
@@ -787,11 +791,14 @@ const (
 	fieldBucketRetentionRules = "retentionRules"
 )
 
+const bucketNameMinLength = 2
+
 type bucket struct {
 	id             influxdb.ID
 	OrgID          influxdb.ID
 	Description    string
 	name           *references
+	displayName    *references
 	RetentionRules retentionRules
 	labels         sortedLabels
 
@@ -813,6 +820,13 @@ func (b *bucket) Labels() []*label {
 }
 
 func (b *bucket) Name() string {
+	if displayName := b.displayName.String(); displayName != "" {
+		return displayName
+	}
+	return b.name.String()
+}
+
+func (b *bucket) PkgName() string {
 	return b.name.String()
 }
 
@@ -836,7 +850,20 @@ func (b *bucket) summarize() SummaryBucket {
 }
 
 func (b *bucket) valid() []validationErr {
-	return b.RetentionRules.valid()
+	var vErrs []validationErr
+	if len(b.Name()) < bucketNameMinLength {
+		vErrs = append(vErrs, validationErr{
+			Field: fieldName,
+			Msg:   fmt.Sprintf("must be a string of at least %d chars in length", bucketNameMinLength),
+		})
+	}
+	vErrs = append(vErrs, b.RetentionRules.valid()...)
+	if len(vErrs) == 0 {
+		return nil
+	}
+	return []validationErr{
+		objectValidationErr(fieldSpec, vErrs...),
+	}
 }
 
 func (b *bucket) shouldApply() bool {
@@ -1217,10 +1244,13 @@ const (
 	fieldLabelColor = "color"
 )
 
+const labelNameMinLength = 2
+
 type label struct {
 	id          influxdb.ID
 	OrgID       influxdb.ID
 	name        *references
+	displayName *references
 	Color       string
 	Description string
 	associationMapping
@@ -1232,6 +1262,13 @@ type label struct {
 }
 
 func (l *label) Name() string {
+	if displayName := l.displayName.String(); displayName != "" {
+		return displayName
+	}
+	return l.name.String()
+}
+
+func (l *label) PkgName() string {
 	return l.name.String()
 }
 
@@ -1295,6 +1332,22 @@ func (l *label) toInfluxLabel() influxdb.Label {
 		OrgID:      l.OrgID,
 		Name:       l.Name(),
 		Properties: l.properties(),
+	}
+}
+
+func (l *label) valid() []validationErr {
+	var vErrs []validationErr
+	if len(l.Name()) < labelNameMinLength {
+		vErrs = append(vErrs, validationErr{
+			Field: fieldName,
+			Msg:   fmt.Sprintf("must be a string of at least %d chars in length", labelNameMinLength),
+		})
+	}
+	if len(vErrs) == 0 {
+		return nil
+	}
+	return []validationErr{
+		objectValidationErr(fieldSpec, vErrs...),
 	}
 }
 
@@ -1828,6 +1881,8 @@ func (t *task) Status() influxdb.Status {
 	return influxdb.Status(t.status)
 }
 
+var fluxRegex = regexp.MustCompile(`import\s+\".*\"`)
+
 func (t *task) flux() string {
 	taskOpts := []string{fmt.Sprintf("name: %q", t.name)}
 	if t.cron != "" {
@@ -1839,11 +1894,24 @@ func (t *task) flux() string {
 	if t.offset > 0 {
 		taskOpts = append(taskOpts, fmt.Sprintf("offset: %s", t.offset))
 	}
+
 	// this is required by the API, super nasty. Will be super challenging for
 	// anyone outside org to figure out how to do this within an hour of looking
 	// at the API :sadpanda:. Would be ideal to let the API translate the arguments
 	// into this required form instead of forcing that complexity on the caller.
-	return fmt.Sprintf("option task = { %s }\n%s", strings.Join(taskOpts, ", "), t.query)
+	taskOptStr := fmt.Sprintf("\noption task = { %s }", strings.Join(taskOpts, ", "))
+
+	if indices := fluxRegex.FindAllIndex([]byte(t.query), -1); len(indices) > 0 {
+		lastImportIdx := indices[len(indices)-1][1]
+		pieces := append([]string{},
+			t.query[:lastImportIdx],
+			taskOptStr,
+			t.query[lastImportIdx:],
+		)
+		return fmt.Sprint(strings.Join(pieces, "\n"))
+	}
+
+	return fmt.Sprintf("%s\n%s", taskOptStr, t.query)
 }
 
 func (t *task) summarize() SummaryTask {
@@ -2156,8 +2224,11 @@ const (
 	fieldChartPosition      = "position"
 	fieldChartQueries       = "queries"
 	fieldChartShade         = "shade"
+	fieldChartFieldOptions  = "fieldOptions"
+	fieldChartTableOptions  = "tableOptions"
 	fieldChartTickPrefix    = "tickPrefix"
 	fieldChartTickSuffix    = "tickSuffix"
+	fieldChartTimeFormat    = "timeFormat"
 	fieldChartWidth         = "width"
 	fieldChartXCol          = "xCol"
 	fieldChartXPos          = "xPos"
@@ -2188,6 +2259,8 @@ type chart struct {
 	BinSize         int
 	BinCount        int
 	Position        string
+	FieldOptions    []fieldOption
+	TableOptions    tableOptions
 	TimeFormat      string
 }
 
@@ -2303,6 +2376,40 @@ func (c chart) properties() influxdb.ViewProperties {
 			Axes:              c.Axes.influxAxes(),
 			Position:          c.Position,
 		}
+	case chartKindTable:
+		fieldOptions := make([]influxdb.RenamableField, 0, len(c.FieldOptions))
+		for _, fieldOpt := range c.FieldOptions {
+			fieldOptions = append(fieldOptions, influxdb.RenamableField{
+				InternalName: fieldOpt.FieldName,
+				DisplayName:  fieldOpt.DisplayName,
+				Visible:      fieldOpt.Visible,
+			})
+		}
+		sort.Slice(fieldOptions, func(i, j int) bool {
+			return fieldOptions[i].InternalName < fieldOptions[j].InternalName
+		})
+
+		return influxdb.TableViewProperties{
+			Type:              influxdb.ViewPropertyTypeTable,
+			Note:              c.Note,
+			ShowNoteWhenEmpty: c.NoteOnEmpty,
+			DecimalPlaces: influxdb.DecimalPlaces{
+				IsEnforced: c.EnforceDecimals,
+				Digits:     int32(c.DecimalPlaces),
+			},
+			Queries:    c.Queries.influxDashQueries(),
+			ViewColors: c.Colors.influxViewColors(),
+			TableOptions: influxdb.TableOptions{
+				VerticalTimeAxis: c.TableOptions.VerticalTimeAxis,
+				SortBy: influxdb.RenamableField{
+					InternalName: c.TableOptions.SortByField,
+				},
+				Wrapping:       c.TableOptions.Wrapping,
+				FixFirstColumn: c.TableOptions.FixFirstColumn,
+			},
+			FieldOptions: fieldOptions,
+			TimeFormat:   c.TimeFormat,
+		}
 	case chartKindXY:
 		return influxdb.XYViewProperties{
 			Type:              influxdb.ViewPropertyTypeXY,
@@ -2344,7 +2451,7 @@ func (c chart) validProperties() []validationErr {
 	// chart kind specific validations
 	switch c.Kind {
 	case chartKindGauge:
-		fails = append(fails, c.Colors.hasTypes(colorTypeMin, colorTypeThreshold, colorTypeMax)...)
+		fails = append(fails, c.Colors.hasTypes(colorTypeMin, colorTypeMax)...)
 	case chartKindHeatMap:
 		fails = append(fails, c.Axes.hasAxes("x", "y")...)
 	case chartKindHistogram:
@@ -2355,6 +2462,8 @@ func (c chart) validProperties() []validationErr {
 	case chartKindSingleStatPlusLine:
 		fails = append(fails, c.Axes.hasAxes("x", "y")...)
 		fails = append(fails, validPosition(c.Position)...)
+	case chartKindTable:
+		fails = append(fails, validTableOptions(c.TableOptions)...)
 	case chartKindXY:
 		fails = append(fails, validGeometry(c.Geom)...)
 		fails = append(fails, c.Axes.hasAxes("x", "y")...)
@@ -2413,6 +2522,56 @@ func (c chart) validBaseProps() []validationErr {
 		})
 	}
 	return fails
+}
+
+const (
+	fieldChartFieldOptionDisplayName = "displayName"
+	fieldChartFieldOptionFieldName   = "fieldName"
+	fieldChartFieldOptionVisible     = "visible"
+)
+
+type fieldOption struct {
+	FieldName   string
+	DisplayName string
+	Visible     bool
+}
+
+const (
+	fieldChartTableOptionVerticalTimeAxis = "verticalTimeAxis"
+	fieldChartTableOptionSortBy           = "sortBy"
+	fieldChartTableOptionWrapping         = "wrapping"
+	fieldChartTableOptionFixFirstColumn   = "fixFirstColumn"
+)
+
+type tableOptions struct {
+	VerticalTimeAxis bool
+	SortByField      string
+	Wrapping         string
+	FixFirstColumn   bool
+}
+
+func validTableOptions(opts tableOptions) []validationErr {
+	var fails []validationErr
+
+	switch opts.Wrapping {
+	case "", "single-line", "truncate", "wrap":
+	default:
+		fails = append(fails, validationErr{
+			Field: fieldChartTableOptionWrapping,
+			Msg:   `chart table option should 1 in ["single-line", "truncate", "wrap"]`,
+		})
+	}
+
+	if len(fails) == 0 {
+		return nil
+	}
+
+	return []validationErr{
+		{
+			Field:  fieldChartTableOptions,
+			Nested: fails,
+		},
+	}
 }
 
 const (
@@ -2530,7 +2689,7 @@ func (q queries) influxDashQueries() []influxdb.DashboardQuery {
 			EditMode: "advanced",
 		}
 		// TODO: axe this builder configs when issue https://github.com/influxdata/influxdb/issues/15708 is fixed up
-		newQuery.BuilderConfig.Tags = append(newQuery.BuilderConfig.Tags, influxdb.NewBuilderTag("_measurement", ""))
+		newQuery.BuilderConfig.Tags = append(newQuery.BuilderConfig.Tags, influxdb.NewBuilderTag("_measurement", "filter", ""))
 		iQueries = append(iQueries, newQuery)
 	}
 	return iQueries
@@ -2657,6 +2816,9 @@ func (r *references) hasValue() bool {
 }
 
 func (r *references) String() string {
+	if r == nil {
+		return ""
+	}
 	if v := r.StringVal(); v != "" {
 		return v
 	}

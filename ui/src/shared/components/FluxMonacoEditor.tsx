@@ -1,28 +1,20 @@
 // Libraries
-import React, {FC, useEffect, useRef, useState} from 'react'
-import {Server} from '@influxdata/flux-lsp-browser'
+import React, {FC, useRef, useState} from 'react'
 
 // Components
 import MonacoEditor from 'react-monaco-editor'
+import FluxBucketProvider from 'src/shared/components/FluxBucketProvider'
+import GetResources from 'src/resources/components/GetResources'
 
 // Utils
-import addFluxTheme, {THEME_NAME} from 'src/external/monaco.fluxTheme'
-import {registerCompletion} from 'src/external/monaco.fluxCompletions'
-import {addSyntax} from 'src/external/monaco.fluxSyntax'
-import {addKeyBindings} from 'src/external/monaco.keyBindings'
-import {
-  sendMessage,
-  initialize,
-  didChange,
-  didOpen,
-} from 'src/external/monaco.lspMessages'
-
-// Constants
-import {FLUXLANGID} from 'src/external/constants'
+import FLUXLANGID from 'src/external/monaco.flux.syntax'
+import THEME_NAME from 'src/external/monaco.flux.theme'
+import loadServer, {LSPServer} from 'src/external/monaco.flux.server'
+import {comments, submit} from 'src/external/monaco.flux.hotkeys'
 
 // Types
 import {OnChangeScript} from 'src/types/flux'
-import {MonacoType, EditorType} from 'src/types'
+import {EditorType, ResourceType} from 'src/types'
 
 import './FluxMonacoEditor.scss'
 
@@ -39,51 +31,51 @@ const FluxEditorMonaco: FC<Props> = ({
   onSubmitScript,
   setEditorInstance,
 }) => {
-  let completionProvider = {dispose: () => {}}
-  const lspServer = useRef(new Server(false))
+  const lspServer = useRef<LSPServer>(null)
   const [docVersion, setdocVersion] = useState(2)
-  const [msgID, setmsgID] = useState(3)
+  const [docURI, setDocURI] = useState('')
 
-  useEffect(() => {
-    sendMessage(initialize, lspServer.current)
-    sendMessage(didOpen(script), lspServer.current)
-    return () => {
-      completionProvider.dispose()
-    }
-  }, [])
-
-  const editorWillMount = (monaco: MonacoType) => {
-    monaco.languages.register({id: FLUXLANGID})
-    addFluxTheme(monaco)
-    addSyntax(monaco)
-    completionProvider = registerCompletion(monaco, lspServer.current)
-  }
-
-  const editorDidMount = (editor: EditorType, monaco: MonacoType) => {
+  const editorDidMount = async (editor: EditorType) => {
     if (setEditorInstance) {
       setEditorInstance(editor)
     }
-    addKeyBindings(editor, monaco)
-    editor.focus()
-    editor.onKeyUp(evt => {
-      const {ctrlKey, code} = evt
-      if (ctrlKey && code === 'Enter') {
-        if (onSubmitScript) {
-          onSubmitScript()
-        }
+
+    const uri = editor.getModel().uri.toString()
+
+    setDocURI(uri)
+
+    comments(editor)
+    submit(editor, () => {
+      if (onSubmitScript) {
+        onSubmitScript()
       }
     })
+
+    editor.focus()
+
+    try {
+      lspServer.current = await loadServer()
+      lspServer.current.didOpen(uri, script)
+    } catch (e) {
+      // TODO: notify user that lsp failed
+    }
   }
 
   const onChange = (text: string) => {
-    sendMessage(didChange(text, docVersion, msgID), lspServer.current)
-    setdocVersion(docVersion + 1)
-    setmsgID(msgID + 1)
     onChangeScript(text)
+    try {
+      lspServer.current.didChange(docURI, text)
+      setdocVersion(docVersion + 1)
+    } catch (e) {
+      // TODO: notify user that lsp failed
+    }
   }
 
   return (
     <div className="time-machine-editor" data-testid="flux-editor">
+      <GetResources resources={[ResourceType.Buckets]}>
+        <FluxBucketProvider />
+      </GetResources>
       <MonacoEditor
         language={FLUXLANGID}
         theme={THEME_NAME}
@@ -91,7 +83,7 @@ const FluxEditorMonaco: FC<Props> = ({
         onChange={onChange}
         options={{
           fontSize: 13,
-          fontFamily: '"RobotoMono", monospace',
+          fontFamily: '"IBMPlexMono", monospace',
           cursorWidth: 2,
           lineNumbersMinChars: 4,
           lineDecorationsWidth: 0,
@@ -101,7 +93,6 @@ const FluxEditorMonaco: FC<Props> = ({
           overviewRulerBorder: false,
           automaticLayout: true,
         }}
-        editorWillMount={editorWillMount}
         editorDidMount={editorDidMount}
       />
     </div>

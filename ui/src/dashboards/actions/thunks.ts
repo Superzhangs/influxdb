@@ -48,7 +48,7 @@ import {getSaveableView} from 'src/timeMachine/selectors'
 import {incrementCloneName} from 'src/utils/naming'
 import {isLimitError} from 'src/cloud/utils/limits'
 import {getOrg} from 'src/organizations/selectors'
-import {getAll, getByID} from 'src/resources/selectors'
+import {getAll, getByID, getStatus} from 'src/resources/selectors'
 
 // Constants
 import * as copy from 'src/shared/copy/notifications'
@@ -193,10 +193,17 @@ export const getDashboards = () => async (
   getState: GetState
 ): Promise<void> => {
   try {
-    const org = getOrg(getState())
     const {setDashboards} = creators
 
-    dispatch(setDashboards(RemoteDataState.Loading))
+    const state = getState()
+    if (
+      getStatus(state, ResourceType.Dashboards) === RemoteDataState.NotStarted
+    ) {
+      dispatch(setDashboards(RemoteDataState.Loading))
+    }
+
+    const org = getOrg(state)
+
     const resp = await api.getDashboards({query: {orgID: org.id}})
 
     if (resp.status !== 200) {
@@ -459,12 +466,18 @@ export const convertToTemplate = (dashboardID: string) => async (
       throw new Error(resp.data.message)
     }
 
-    const normVars = normalize<Variable, VariableEntities, string>(
-      resp.data,
-      arrayOfVariables
-    )
+    let vars = []
 
-    const vars = Object.values(normVars.entities.variables)
+    // dumb bug
+    // https://github.com/paularmstrong/normalizr/issues/290
+    if (resp.data.variables.length) {
+      const normVars = normalize<Variable, VariableEntities, string>(
+        resp.data.variables,
+        arrayOfVariables
+      )
+
+      vars = Object.values(normVars.entities.variables)
+    }
 
     const variables = filterUnusedVars(vars, views)
     const exportedVariables = exportVariables(variables, vars)
@@ -478,6 +491,7 @@ export const convertToTemplate = (dashboardID: string) => async (
 
     dispatch(setExportTemplate(RemoteDataState.Done, dashboardTemplate))
   } catch (error) {
+    console.error(error)
     dispatch(setExportTemplate(RemoteDataState.Error))
     dispatch(notify(copy.createTemplateFailed(error)))
   }

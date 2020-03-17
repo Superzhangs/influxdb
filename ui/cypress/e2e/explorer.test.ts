@@ -369,6 +369,15 @@ describe('DataExplorer', () => {
       cy.getByTestID('switch-to-script-editor')
         .should('be.visible')
         .click()
+      cy.getByTestID('flux-function aggregate.rate').click()
+      // check to see if import is defaulted to the top
+      cy.get('.view-line')
+        .first()
+        .contains('import')
+      // check to see if new aggregate rate is at the bottom
+      cy.get('.view-line')
+        .last()
+        .contains('aggregate.')
       cy.getByTestID('flux-editor').should('exist')
       cy.getByTestID('flux-editor').within(() => {
         cy.get('textarea').type('yoyoyoyoyo', {force: true})
@@ -526,8 +535,14 @@ describe('DataExplorer', () => {
       })
 
       cy.getByTestID('toolbar-tab').click()
+      // checks to see if the default variables exist
+      cy.get('.variables-toolbar--label').contains('timeRangeStart')
+      cy.get('.variables-toolbar--label').contains('timeRangeStop')
+      cy.get('.variables-toolbar--label').contains('windowPeriod')
       //insert variable name by clicking on variable
-      cy.get('.variables-toolbar--label').click()
+      cy.get('.variables-toolbar--label')
+        .first()
+        .click()
 
       cy.getByTestID('save-query-as').click()
       cy.getByTestID('task--radio-button').click()
@@ -560,7 +575,8 @@ describe('DataExplorer', () => {
       cy.get('.query-tab').should('have.length', 2)
       cy.get('.query-tab--close')
         .first()
-        .click()
+        // Element is only visible on hover, using force to make this test pass
+        .click({force: true})
       cy.get('.query-tab').should('have.length', 1)
     })
 
@@ -570,6 +586,10 @@ describe('DataExplorer', () => {
         'have.class',
         'cf-right-click--menu-item__disabled'
       )
+
+      // Fire a click outside of the right click menu to dismiss it because
+      // it is obscuring the + button
+      cy.getByTestID('page-header').click()
 
       cy.get('.time-machine-queries--new').click()
       cy.get('.query-tab').should('have.length', 2)

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/influxdata/influxdb"
 	"github.com/influxdata/influxdb/http"
@@ -13,28 +12,24 @@ import (
 
 type secretSVCsFn func() (influxdb.SecretService, influxdb.OrganizationService, func(*input.UI) string, error)
 
-func cmdSecret(opts ...genericCLIOptFn) *cobra.Command {
-	return newCmdSecretBuilder(newSecretSVCs, opts...).cmd()
+func cmdSecret(f *globalFlags, opt genericCLIOpts) *cobra.Command {
+	builder := newCmdSecretBuilder(newSecretSVCs, opt)
+	builder.globalFlags = f
+	return builder.cmd()
 }
 
 type cmdSecretBuilder struct {
 	genericCLIOpts
+	*globalFlags
 
 	svcFn secretSVCsFn
 
-	key string
-	org organization
+	key   string
+	value string
+	org   organization
 }
 
-func newCmdSecretBuilder(svcsFn secretSVCsFn, opts ...genericCLIOptFn) *cmdSecretBuilder {
-	opt := genericCLIOpts{
-		in: os.Stdin,
-		w:  os.Stdout,
-	}
-	for _, o := range opts {
-		o(&opt)
-	}
-
+func newCmdSecretBuilder(svcsFn secretSVCsFn, opt genericCLIOpts) *cmdSecretBuilder {
 	return &cmdSecretBuilder{
 		genericCLIOpts: opt,
 		svcFn:          svcsFn,
@@ -57,6 +52,7 @@ func (b *cmdSecretBuilder) cmdUpdate() *cobra.Command {
 	cmd := b.newCmd("update", b.cmdUpdateRunEFn)
 	cmd.Short = "Update secret"
 	cmd.Flags().StringVarP(&b.key, "key", "k", "", "The secret key (required)")
+	cmd.Flags().StringVarP(&b.value, "value", "v", "", "Optional secret value for scripting convenience, using this might expose the secret to your local history")
 	cmd.MarkFlagRequired("key")
 	b.org.register(cmd, false)
 
@@ -90,7 +86,12 @@ func (b *cmdSecretBuilder) cmdUpdateRunEFn(cmd *cobra.Command, args []string) er
 		Writer: b.genericCLIOpts.w,
 		Reader: b.genericCLIOpts.in,
 	}
-	secret := getSecretFn(ui)
+	var secret string
+	if b.value != "" {
+		secret = b.value
+	} else {
+		secret = getSecretFn(ui)
+	}
 
 	if err := scrSVC.PatchSecrets(ctx, orgID, map[string]string{b.key: secret}); err != nil {
 		return fmt.Errorf("failed to update secret with key %q: %v", b.key, err)
@@ -136,8 +137,9 @@ func (b *cmdSecretBuilder) cmdDeleteRunEFn(cmd *cobra.Command, args []string) er
 }
 
 func (b *cmdSecretBuilder) cmdFind() *cobra.Command {
-	cmd := b.newCmd("find", b.cmdFindRunEFn)
-	cmd.Short = "Find secrets"
+	cmd := b.newCmd("list", b.cmdFindRunEFn)
+	cmd.Short = "List secrets"
+	cmd.Aliases = []string{"find", "ls"}
 	b.org.register(cmd, false)
 
 	return cmd

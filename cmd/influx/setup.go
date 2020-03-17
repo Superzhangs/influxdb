@@ -2,13 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/influxdata/influxdb"
-	platform "github.com/influxdata/influxdb"
+	"github.com/influxdata/influxdb/cmd/influx/config"
 	"github.com/influxdata/influxdb/cmd/influx/internal"
 	"github.com/influxdata/influxdb/http"
 	"github.com/spf13/cobra"
@@ -21,23 +23,23 @@ var setupFlags struct {
 	token     string
 	org       string
 	bucket    string
-	retention int
+	retention time.Duration
+	name      string
 	force     bool
 }
 
-func cmdSetup() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "setup",
-		Short: "Setup instance with initial user, org, bucket",
-		RunE:  wrapErrorFmt(setupF),
-	}
+func cmdSetup(f *globalFlags, opt genericCLIOpts) *cobra.Command {
+	cmd := opt.newCmd("setup", nil)
+	cmd.RunE = setupF
+	cmd.Short = "Setup instance with initial user, org, bucket"
 
 	cmd.Flags().StringVarP(&setupFlags.username, "username", "u", "", "primary username")
 	cmd.Flags().StringVarP(&setupFlags.password, "password", "p", "", "password for username")
 	cmd.Flags().StringVarP(&setupFlags.token, "token", "t", "", "token for username, else auto-generated")
 	cmd.Flags().StringVarP(&setupFlags.org, "org", "o", "", "primary organization name")
 	cmd.Flags().StringVarP(&setupFlags.bucket, "bucket", "b", "", "primary bucket name")
-	cmd.Flags().IntVarP(&setupFlags.retention, "retention", "r", -1, "retention period in hours, else infinite")
+	cmd.Flags().StringVarP(&setupFlags.name, "name", "n", "", "config name, only required if you already have existing configs")
+	cmd.Flags().DurationVarP(&setupFlags.retention, "retention", "r", -1, "Duration bucket will retain data. 0 is infinite. Default is 0.")
 	cmd.Flags().BoolVarP(&setupFlags.force, "force", "f", false, "skip confirmation prompt")
 
 	return cmd
@@ -50,27 +52,37 @@ func setupF(cmd *cobra.Command, args []string) error {
 
 	// check if setup is allowed
 	s := &http.SetupService{
-		Addr:               flags.host,
+		Addr:               flags.Host,
 		InsecureSkipVerify: flags.skipVerify,
 	}
-
 	allowed, err := s.IsOnboarding(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to determine if instance has been configured: %v", err)
 	}
 	if !allowed {
-		return fmt.Errorf("instance at %q has already been setup", flags.host)
+		return fmt.Errorf("instance at %q has already been setup", flags.Host)
 	}
 
-	dPath, dir, err := defaultTokenPath()
+	dPath, dir, err := defaultConfigPath()
 	if err != nil {
 		return err
 	}
 
+	existingConfigs := make(config.Configs)
 	if _, err := os.Stat(dPath); err == nil {
-		return &platform.Error{
-			Code: platform.EConflict,
-			Msg:  fmt.Sprintf("token already exists at %s", dPath),
+		existingConfigs, _ = config.LocalConfigsSVC{
+			Path: dPath,
+			Dir:  dir,
+		}.ParseConfigs()
+		// ignore the error if found nothing
+		if setupFlags.name == "" {
+			return errors.New("flag name is required if you already have existing configs")
+		}
+		if _, ok := existingConfigs[setupFlags.name]; ok {
+			return &influxdb.Error{
+				Code: influxdb.EConflict,
+				Msg:  fmt.Sprintf("config name %q already existed", setupFlags.name),
+			}
 		}
 	}
 
@@ -84,12 +96,29 @@ func setupF(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to setup instance: %v", err)
 	}
 
-	err = writeTokenToPath(result.Auth.Token, dPath, dir)
-	if err != nil {
-		return fmt.Errorf("failed to write token to path %q: %v", dPath, err)
+	var configName string
+	var p *config.Config
+	if len(existingConfigs) > 0 {
+		configName = setupFlags.name
+		p = &config.Config{
+			Host: flags.Host,
+		}
+	} else {
+		configName = "default"
+		p = &config.DefaultConfig
+	}
+	p.Token = result.Auth.Token
+	p.Org = result.Org.Name
+	existingConfigs[configName] = *p
+	localSVC := config.LocalConfigsSVC{
+		Path: dPath,
+		Dir:  dir,
+	}
+	if err = localSVC.WriteConfigs(existingConfigs); err != nil {
+		return fmt.Errorf("failed to write config to path %q: %v", dPath, err)
 	}
 
-	fmt.Println(string(promptWithColor("Your token has been stored in "+dPath+".", colorCyan)))
+	fmt.Println(string(promptWithColor(fmt.Sprintf("Config %s has been stored in %s.", configName, dPath), colorCyan)))
 
 	w := internal.NewTabWriter(os.Stdout)
 	w.WriteHeaders(
@@ -116,35 +145,37 @@ func isInteractive() bool {
 		setupFlags.bucket == ""
 }
 
-func onboardingRequest() (*platform.OnboardingRequest, error) {
+func onboardingRequest() (*influxdb.OnboardingRequest, error) {
 	if isInteractive() {
 		return interactive()
 	}
 	return nonInteractive()
 }
 
-func nonInteractive() (*platform.OnboardingRequest, error) {
-	req := &platform.OnboardingRequest{
-		User:            setupFlags.username,
-		Password:        setupFlags.password,
-		Token:           setupFlags.token,
-		Org:             setupFlags.org,
-		Bucket:          setupFlags.bucket,
-		RetentionPeriod: uint(setupFlags.retention),
+func nonInteractive() (*influxdb.OnboardingRequest, error) {
+	req := &influxdb.OnboardingRequest{
+		User:     setupFlags.username,
+		Password: setupFlags.password,
+		Token:    setupFlags.token,
+		Org:      setupFlags.org,
+		Bucket:   setupFlags.bucket,
+		// TODO: this manipulation is required by the API, something that
+		// 	we should fixup to be a duration instead
+		RetentionPeriod: uint(setupFlags.retention / time.Hour),
 	}
 
 	if setupFlags.retention < 0 {
-		req.RetentionPeriod = platform.InfiniteRetention
+		req.RetentionPeriod = influxdb.InfiniteRetention
 	}
 	return req, nil
 }
 
-func interactive() (req *platform.OnboardingRequest, err error) {
+func interactive() (req *influxdb.OnboardingRequest, err error) {
 	ui := &input.UI{
 		Writer: os.Stdout,
 		Reader: os.Stdin,
 	}
-	req = new(platform.OnboardingRequest)
+	req = new(influxdb.OnboardingRequest)
 	fmt.Println(string(promptWithColor(`Welcome to InfluxDB 2.0!`, colorYellow)))
 	if setupFlags.username != "" {
 		req.User = setupFlags.username
@@ -174,7 +205,7 @@ func interactive() (req *platform.OnboardingRequest, err error) {
 		req.RetentionPeriod = uint(setupFlags.retention)
 	} else {
 		for {
-			rpStr := getInput(ui, "Please type your retention period in hours.\r\nOr press ENTER for infinite.", strconv.Itoa(platform.InfiniteRetention))
+			rpStr := getInput(ui, "Please type your retention period in hours.\r\nOr press ENTER for infinite.", strconv.Itoa(influxdb.InfiniteRetention))
 			rp, err := strconv.Atoi(rpStr)
 			if rp >= 0 && err == nil {
 				req.RetentionPeriod = uint(rp)
@@ -206,7 +237,7 @@ func promptWithColor(s string, color []byte) []byte {
 	return append(bb, keyReset...)
 }
 
-func getConfirm(ui *input.UI, or *platform.OnboardingRequest) bool {
+func getConfirm(ui *input.UI, or *influxdb.OnboardingRequest) bool {
 	prompt := promptWithColor("Confirm? (y/n)", colorRed)
 	for {
 		rp := "infinite"
@@ -237,42 +268,50 @@ You have entered:
 	}
 }
 
-func errSecretIsNotMatch(title string) error {
-	return fmt.Errorf(title + "s do not match")
-}
+var errPasswordNotMatch = fmt.Errorf("passwords do not match")
 
-func errSecretIsTooShort(title string) error {
-	return &influxdb.Error{
-		Code: influxdb.EUnprocessableEntity,
-		Msg:  title + " is too short",
-	}
-}
+var errPasswordIsTooShort error = fmt.Errorf("password is too short")
 
 func getSecret(ui *input.UI) (secret string) {
-	return getSecretInput(ui, false, "secret")
-}
-
-func getPassword(ui *input.UI, showNew bool) (password string) {
-	return getSecretInput(ui, showNew, "password")
-}
-
-func getSecretInput(ui *input.UI, showNew bool, title string) (secret string) {
-	newStr := ""
-	if showNew {
-		newStr = " new"
-	}
 	var err error
-enterSecret:
-	query := string(promptWithColor("Please type your"+newStr+" "+title, colorCyan))
+	query := string(promptWithColor("Please type your secret", colorCyan))
 	for {
 		secret, err = ui.Ask(query, &input.Options{
 			Required:  true,
 			HideOrder: true,
 			Hide:      true,
 			Mask:      false,
+		})
+		switch err {
+		case input.ErrInterrupted:
+			os.Exit(1)
+		default:
+			if secret = strings.TrimSpace(secret); secret == "" {
+				continue
+			}
+		}
+		break
+	}
+	return secret
+}
+
+func getPassword(ui *input.UI, showNew bool) (password string) {
+	newStr := ""
+	if showNew {
+		newStr = " new"
+	}
+	var err error
+enterPassword:
+	query := string(promptWithColor("Please type your"+newStr+" password", colorCyan))
+	for {
+		password, err = ui.Ask(query, &input.Options{
+			Required:  true,
+			HideOrder: true,
+			Hide:      true,
+			Mask:      false,
 			ValidateFunc: func(s string) error {
 				if len(s) < 8 {
-					return errSecretIsTooShort(title)
+					return errPasswordIsTooShort
 				}
 				return nil
 			},
@@ -280,25 +319,25 @@ enterSecret:
 		switch err {
 		case input.ErrInterrupted:
 			os.Exit(1)
+		case errPasswordIsTooShort:
+			ui.Writer.Write(promptWithColor("Password too short - minimum length is 8 characters!\n\r", colorRed))
+			continue
 		default:
-			if influxdb.ErrorCode(err) == influxdb.EUnprocessableEntity {
-				ui.Writer.Write(promptWithColor(strings.ToTitle(title)+" too short - minimum length is 8 characters!\n\r", colorRed))
-				goto enterSecret
-			} else if secret = strings.TrimSpace(secret); secret == "" {
+			if password = strings.TrimSpace(password); password == "" {
 				continue
 			}
 		}
 		break
 	}
-	query = string(promptWithColor("Please type your"+newStr+" "+title+" again", colorCyan))
+	query = string(promptWithColor("Please type your"+newStr+" password again", colorCyan))
 	for {
 		_, err = ui.Ask(query, &input.Options{
 			Required:  true,
 			HideOrder: true,
 			Hide:      true,
 			ValidateFunc: func(s string) error {
-				if s != secret {
-					return errSecretIsNotMatch(title)
+				if s != password {
+					return errPasswordNotMatch
 				}
 				return nil
 			},
@@ -309,12 +348,12 @@ enterSecret:
 		case nil:
 			// Nothing.
 		default:
-			ui.Writer.Write(promptWithColor(strings.ToTitle(title)+"s do not match!\n", colorRed))
-			goto enterSecret
+			ui.Writer.Write(promptWithColor("Passwords do not match!\n", colorRed))
+			goto enterPassword
 		}
 		break
 	}
-	return secret
+	return password
 }
 
 func getInput(ui *input.UI, prompt, defaultValue string) string {

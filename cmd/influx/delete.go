@@ -11,14 +11,11 @@ import (
 
 var deleteFlags http.DeleteRequest
 
-func cmdDelete() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "delete points from an influxDB bucket",
-		Short: "Delete points from influxDB",
-		Long: `Delete points from influxDB, by specify start, end time
-	and a sql like predicate string.`,
-		RunE: wrapCheckSetup(fluxDeleteF),
-	}
+func cmdDelete(f *globalFlags, opt genericCLIOpts) *cobra.Command {
+	cmd := opt.newCmd("delete", fluxDeleteF)
+	cmd.Short = "Delete points from influxDB"
+	cmd.Long = `Delete points from influxDB, by specify start, end time
+	and a sql like predicate string.`
 
 	opts := flagOpts{
 		{
@@ -71,8 +68,8 @@ func fluxDeleteF(cmd *cobra.Command, args []string) error {
 	}
 
 	s := &http.DeleteService{
-		Addr:               flags.host,
-		Token:              flags.token,
+		Addr:               flags.Host,
+		Token:              flags.Token,
 		InsecureSkipVerify: flags.skipVerify,
 	}
 
