@@ -58,12 +58,16 @@ type serviceOpt struct {
 	logger *zap.Logger
 
 	applyReqLimit int
+	idGen         influxdb.IDGenerator
+	timeGen       influxdb.TimeGenerator
+	store         Store
 
 	bucketSVC   influxdb.BucketService
 	checkSVC    influxdb.CheckService
 	dashSVC     influxdb.DashboardService
 	labelSVC    influxdb.LabelService
 	endpointSVC influxdb.NotificationEndpointService
+	orgSVC      influxdb.OrganizationService
 	ruleSVC     influxdb.NotificationRuleStore
 	secretSVC   influxdb.SecretService
 	taskSVC     influxdb.TaskService
@@ -78,6 +82,27 @@ type ServiceSetterFn func(opt *serviceOpt)
 func WithLogger(log *zap.Logger) ServiceSetterFn {
 	return func(o *serviceOpt) {
 		o.logger = log
+	}
+}
+
+// WithIDGenerator sets the id generator for the service.
+func WithIDGenerator(idGen influxdb.IDGenerator) ServiceSetterFn {
+	return func(opt *serviceOpt) {
+		opt.idGen = idGen
+	}
+}
+
+// WithTimeGenerator sets the time generator for the service.
+func WithTimeGenerator(timeGen influxdb.TimeGenerator) ServiceSetterFn {
+	return func(opt *serviceOpt) {
+		opt.timeGen = timeGen
+	}
+}
+
+// WithStore sets the store for the service.
+func WithStore(store Store) ServiceSetterFn {
+	return func(opt *serviceOpt) {
+		opt.store = store
 	}
 }
 
@@ -113,6 +138,13 @@ func WithNotificationEndpointSVC(endpointSVC influxdb.NotificationEndpointServic
 func WithNotificationRuleSVC(ruleSVC influxdb.NotificationRuleStore) ServiceSetterFn {
 	return func(opt *serviceOpt) {
 		opt.ruleSVC = ruleSVC
+	}
+}
+
+// WithOrganizationService sets the organization service for the service.
+func WithOrganizationService(orgSVC influxdb.OrganizationService) ServiceSetterFn {
+	return func(opt *serviceOpt) {
+		opt.orgSVC = orgSVC
 	}
 }
 
@@ -165,9 +197,10 @@ type Service struct {
 	log *zap.Logger
 
 	// internal dependencies
-	idGen   influxdb.IDGenerator
-	timeGen influxdb.TimeGenerator
-	store   Store
+	applyReqLimit int
+	idGen         influxdb.IDGenerator
+	store         Store
+	timeGen       influxdb.TimeGenerator
 
 	// external service dependencies
 	bucketSVC   influxdb.BucketService
@@ -175,13 +208,12 @@ type Service struct {
 	dashSVC     influxdb.DashboardService
 	labelSVC    influxdb.LabelService
 	endpointSVC influxdb.NotificationEndpointService
+	orgSVC      influxdb.OrganizationService
 	ruleSVC     influxdb.NotificationRuleStore
 	secretSVC   influxdb.SecretService
 	taskSVC     influxdb.TaskService
 	teleSVC     influxdb.TelegrafConfigStore
 	varSVC      influxdb.VariableService
-
-	applyReqLimit int
 }
 
 var _ SVC = (*Service)(nil)
@@ -197,18 +229,24 @@ func NewService(opts ...ServiceSetterFn) *Service {
 	}
 
 	return &Service{
-		log:           opt.logger,
-		bucketSVC:     opt.bucketSVC,
-		checkSVC:      opt.checkSVC,
-		labelSVC:      opt.labelSVC,
-		dashSVC:       opt.dashSVC,
-		endpointSVC:   opt.endpointSVC,
-		ruleSVC:       opt.ruleSVC,
-		secretSVC:     opt.secretSVC,
-		taskSVC:       opt.taskSVC,
-		teleSVC:       opt.teleSVC,
-		varSVC:        opt.varSVC,
+		log: opt.logger,
+
 		applyReqLimit: opt.applyReqLimit,
+		idGen:         opt.idGen,
+		store:         opt.store,
+		timeGen:       opt.timeGen,
+
+		bucketSVC:   opt.bucketSVC,
+		checkSVC:    opt.checkSVC,
+		labelSVC:    opt.labelSVC,
+		dashSVC:     opt.dashSVC,
+		endpointSVC: opt.endpointSVC,
+		orgSVC:      opt.orgSVC,
+		ruleSVC:     opt.ruleSVC,
+		secretSVC:   opt.secretSVC,
+		taskSVC:     opt.taskSVC,
+		teleSVC:     opt.teleSVC,
+		varSVC:      opt.varSVC,
 	}
 }
 
@@ -216,6 +254,14 @@ func NewService(opts ...ServiceSetterFn) *Service {
 // with urls that point to the location of packages that are included as part of the stack when
 // it is applied.
 func (s *Service) InitStack(ctx context.Context, orgID, userID influxdb.ID, urls ...url.URL) (Stack, error) {
+	if _, err := s.orgSVC.FindOrganizationByID(ctx, orgID); err != nil {
+		if influxdb.ErrorCode(err) == influxdb.ENotFound {
+			msg := fmt.Sprintf("organization dependency does not exist for id[%q]", orgID.String())
+			return Stack{}, toInfluxError(influxdb.EConflict, msg)
+		}
+		return Stack{}, internalErr(err)
+	}
+
 	now := s.timeGen.Now()
 
 	stack := Stack{
@@ -228,7 +274,7 @@ func (s *Service) InitStack(ctx context.Context, orgID, userID influxdb.ID, urls
 	}
 
 	if err := s.store.CreateStack(ctx, orgID, stack); err != nil {
-		return Stack{}, err
+		return Stack{}, internalErr(err)
 	}
 
 	return stack, nil
@@ -2224,5 +2270,12 @@ func internalErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	return &influxdb.Error{Code: influxdb.EInternal, Err: err}
+	return toInfluxError(influxdb.EInternal, err.Error())
+}
+
+func toInfluxError(code string, msg string) *influxdb.Error {
+	return &influxdb.Error{
+		Code: code,
+		Msg:  msg,
+	}
 }
